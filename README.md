@@ -1,1 +1,1 @@
-# multi-agent-MoE
+# Multi Agent Mixture of Experts
