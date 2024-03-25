@@ -52,8 +52,9 @@ class ModularDataModule(LightningDataModule):
 
         self.transforms = custom_transforms or {
             'MNIST': transforms.Compose([
-                transforms.ToTensor(),  # Converts images to PyTorch tensors with values in [0, 1]
-                transforms.Normalize((0.5,), (0.5,))  # Normalizes tensors to have mean 0.5 and std 0.5
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]),
             'FashionMNIST': transforms.Compose([
                 transforms.Grayscale(num_output_channels=3),

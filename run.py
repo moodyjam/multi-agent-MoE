@@ -28,10 +28,16 @@ if __name__=="__main__":
     checkpoint_callback = ModelCheckpoint(monitor="val_acc", mode="max")
 
     # Define your model here
-    model = DiNNO(agent_config=config["agents"],
-                  graph_type=config["graph_type"],
-                  fiedler_value=config["fiedler_value"],
-                  oits=config["max_steps"])
+    if config["algorithm"] == "dinno":
+        model = DiNNO(agent_config=config["agents"],
+                    graph_type=config["graph_type"],
+                    fiedler_value=config["fiedler_value"],
+                    oits=config["max_steps"])
+    else:
+        model = MAMoE(agent_config=config["agents"],
+                    graph_type=config["graph_type"],
+                    fiedler_value=config["fiedler_value"],
+                    oits=config["max_steps"])
 
     # Define the datamodule here
     datamodule = ModularDataModule(

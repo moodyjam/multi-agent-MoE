@@ -1,0 +1,50 @@
+agents:
+  - id: mnist_agent01
+    data:
+      - dataset: MNIST
+        labels: [0, 1]  
+  - id: mnist_agent23
+    data:
+      - dataset: MNIST
+        labels: [2, 3]
+  - id: mnist_agent45
+    data:
+      - dataset: MNIST
+        labels: [4, 5]
+  - id: mnist_agent67
+    data:
+      - dataset: MNIST
+        labels: [6, 7]
+  - id: mnist_agent89
+    data:
+      - dataset: MNIST
+        labels: [8, 9]
+  - id: fashion_agent01
+    data:
+      - dataset: FashionMNIST
+        labels: [0, 1]
+  - id: fashion_agent23
+    data:
+      - dataset: FashionMNIST
+        labels: [2, 3]
+  - id: fashion_agent45
+    data:
+      - dataset: FashionMNIST
+        labels: [4, 5]
+  - id: fashion_agent67
+    data:
+      - dataset: FashionMNIST
+        labels: [6, 7]
+  - id: fashion_agent89
+    data:
+      - dataset: FashionMNIST
+        labels: [8, 9]
+batch_size: 128
+num_workers: 0
+run_name: mamoe_fashion_plus_mnist
+algorithm: mamoe
+max_steps: 2000
+gpus: 1
+accelerator: cpu
+graph_type: complete
+fiedler_value: 0.7
