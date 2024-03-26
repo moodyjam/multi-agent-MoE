@@ -41,8 +41,8 @@ agents:
         labels: [8, 9]
 batch_size: 128
 num_workers: 0
-run_name: mamoe_fashion_plus_mnist
-algorithm: mamoe
+run_name: moemas_fashion_plus_mnist
+algorithm: moemas
 max_steps: 2000
 gpus: 1
 accelerator: cpu

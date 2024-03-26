@@ -31,7 +31,8 @@ class MNISTConvNet(nn.Module):
             nn.Flatten())
         
         # Our g network
-        self.gating = nn.Embedding(num_nodes, fc1_indim)
+        # self.gating = nn.Embedding(num_nodes, fc1_indim)
+        self.gating = nn.Parameter(torch.randn(num_nodes, fc1_indim))
             
         # Our h network
         self.specialist = nn.Sequential(
@@ -62,7 +63,8 @@ class MoEMAS(L.LightningModule):
                  lr_start=0.005,
                  lr_finish=0.0005,
                  oits=2000,
-                 rho_update=0.0003):
+                 rho_update=0.0003,
+                 topk = 2):
         super().__init__()
         self.num_nodes = len(agent_config)
         self.G, self.G_connectivity = create_graph(num_nodes = self.num_nodes,
@@ -94,7 +96,7 @@ class MoEMAS(L.LightningModule):
         self.save_hyperparameters()
 
     def calculate_loss(self, x, y, theta_reg, curr_agent):
-        primal_loss = self.criterion(curr_agent.model(x), y)
+        primal_loss = self.criterion(curr_agent.model.encoder(x), y)
         theta = torch.nn.utils.parameters_to_vector(curr_agent.model.parameters())
         reg = torch.sum(torch.square(torch.cdist(theta.reshape(1, -1), theta_reg)))
         return primal_loss + torch.dot(curr_agent.dual, theta) + self.rho * reg
@@ -107,12 +109,16 @@ class MoEMAS(L.LightningModule):
             curr_agent = self.agents[agent_id]
             curr_agent.set_flattened_params()
         self.rho *= (1 + self.hparams.rho_update) 
+        
+        for agent_idx, agent_id in enumerate(self.agents):
+            curr_agent = self.agents[agent_id]
+            curr_agent.opt = optim.Adam(curr_agent.parameters(), lr=self.lr_schedule[self.manual_global_step])
 
         # Technically this can be done in parallel
         all_losses = []
-        for agent_id in self.agents:
-            curr_agent = self.agents[agent_id]
-            neighbor_indices = self.G.neighbors(curr_agent.idx)
+        for agent_idx, agent_id in enumerate(self.agents):
+            curr_agent = self.agents[agent_id]     
+            neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
@@ -121,19 +127,34 @@ class MoEMAS(L.LightningModule):
             x, y = curr_batch
             split_size = x.shape[0] // self.hparams.B
             
-            # Optimize for current agent
-            opt = optim.Adam(curr_agent.parameters(), lr=self.lr_schedule[self.manual_global_step])
-            
-            self.log(f"learning_rate", self.lr_schedule[self.manual_global_step], logger=True)
+            if agent_idx == 0:
+                self.log("learning_rate", self.lr_schedule[self.manual_global_step], logger=True)
             
             # Loop through B times for the current agent
             for tau in range(self.hparams.B):
                 x_split = x[tau*split_size:(tau+1)*split_size]
                 y_split = y[tau*split_size:(tau+1)*split_size]
-                opt.zero_grad()
-                loss = self.calculate_loss(x_split, y_split, theta_reg, curr_agent=curr_agent)
+                
+                curr_agent.opt.zero_grad()
+                x_encoded = curr_agent.model.encoder(x_split)
+                scores = F.softmax(x_encoded @ curr_agent.model.gating.T, dim=-1)
+                             
+                # Added optimization loop for neighbor losses  
+                # Here more communication would occur 
+                neighbor_losses = []
+                for neighbor_idx in neighbor_indices:
+                    neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
+                    neighbor_agent.opt.zero_grad()
+                    neighbor_pred = neighbor_agent.specialist(x_encoded.clone().detach())
+                    neighbor_loss = self.criterion(neighbor_pred, y_split)
+                    neighbor_losses.append(neighbor_loss.item())
+                    self.manual_backward(neighbor_loss)
+                    neighbor_agent.opt.step()
+                
+                # TODO Add loss for gating and specialist networks
+                loss = self.calculate_loss(x_split, y_split, theta_reg, curr_agent=curr_agent, scores=scores, neighbor_losses=neighbor_losses)
                 self.manual_backward(loss)
-                opt.step()
+                curr_agent.opt.step()
 
             self.log(f"{agent_id}_train_loss", loss, logger=True)
             all_losses.append(loss.item())
@@ -143,17 +164,17 @@ class MoEMAS(L.LightningModule):
 
         return loss
     
-    def validation_step(self, batch, batch_idx):
-        x, y = batch
-        all_accs = []
-        for agent_id in self.agents:
-            curr_agent = self.agents[agent_id]
-            logits = curr_agent.model(x)
-            preds = torch.argmax(logits, dim=1)
-            acc = torch.sum(y == preds).float() / len(y)
-            self.log(f'{agent_id}_val_acc', acc.item(), on_epoch=True, logger=True)
-            all_accs.append(acc.item())
-        self.log(f'val_acc', np.mean(all_accs), on_epoch=True, prog_bar=True, logger=True)
+    # def validation_step(self, batch, batch_idx):
+    #     x, y = batch
+    #     all_accs = []
+    #     for agent_id in self.agents:
+    #         curr_agent = self.agents[agent_id]
+    #         logits = curr_agent.model(x)
+    #         preds = torch.argmax(logits, dim=1)
+    #         acc = torch.sum(y == preds).float() / len(y)
+    #         self.log(f'{agent_id}_val_acc', acc.item(), on_epoch=True, logger=True)
+    #         all_accs.append(acc.item())
+    #     self.log(f'val_acc', np.mean(all_accs), on_epoch=True, prog_bar=True, logger=True)
 
 
     def configure_optimizers(self):
