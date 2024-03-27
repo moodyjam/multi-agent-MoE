@@ -5,7 +5,12 @@ from lightning.pytorch import LightningDataModule
 from torchvision import transforms, datasets
 from torch.utils.data import Subset, DataLoader, ConcatDataset, default_collate
 import numpy as np
+from torch.utils.data import Dataset
 
+DATASET_IDX_MAP = {
+    "MNIST": 0,
+    "FashionMNIST": 1
+}
 
 def get_custom_collate_fn(dataset_name):
     def custom_collate_fn(batch):
@@ -22,6 +27,25 @@ def get_custom_collate_fn(dataset_name):
         return batch_dict
 
     return custom_collate_fn
+
+class DatasetWrapper(Dataset):
+    def __init__(self, dataset, dataset_name):
+        self.dataset = dataset
+        
+        match dataset_name:
+            case "MNIST":
+                self.dataset_idx = 0
+            case "FashionMNIST":
+                self.dataset_idx = 1
+        
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        if self.dataset_name == "FashionMNIST":
+            label = label + 10
+        data, label = self.dataset[idx]
+        return data, label, self.dataset_idx
 
 
 class ModularDataModule(LightningDataModule):
@@ -46,7 +70,8 @@ class ModularDataModule(LightningDataModule):
             for i in range(num_agent_datasets):
                 if agent['data'][i]['dataset'] not in self.dataset_names:
                     self.dataset_names.append(agent['data'][i]['dataset'])
-
+                    
+        self.labels_map = {'MNIST': 0, 'FashionMNIST': 10}
 
         self.cache_dir = cache_dir
 
@@ -142,9 +167,9 @@ class ModularDataModule(LightningDataModule):
                 train_dataset = train_datasets[dataset_name]
                 test_dataset = train_datasets[dataset_name]
                 for label in agent['data'][i]['labels']:
-                    agent_train_dataset.append(Subset(train_dataset, self.cache[dataset_name]["train"][label]))
-                    agent_val_dataset.append(Subset(train_dataset, self.cache[dataset_name]["val"][label]))
-                    agent_test_dataset.append(Subset(test_dataset, self.cache[dataset_name]["test"][label]))
+                    agent_train_dataset.append(DatasetWrapper(Subset(train_dataset, self.cache[dataset_name]["train"][label]), dataset_name))
+                    agent_val_dataset.append(DatasetWrapper(Subset(train_dataset, self.cache[dataset_name]["val"][label]), dataset_name))
+                    agent_test_dataset.append(DatasetWrapper(Subset(test_dataset, self.cache[dataset_name]["test"][label]), dataset_name))
 
             self.agent_datasets[agent_id]["train"] = ConcatDataset(agent_train_dataset)
             self.agent_datasets[agent_id]["val"] = ConcatDataset(agent_val_dataset)

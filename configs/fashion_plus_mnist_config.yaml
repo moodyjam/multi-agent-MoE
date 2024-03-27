@@ -48,3 +48,4 @@ gpus: 1
 accelerator: cpu
 graph_type: complete
 fiedler_value: 0.7
+num_labels: 20 # This should be the total number of labels across all datasets

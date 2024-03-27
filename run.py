@@ -38,7 +38,8 @@ if __name__=="__main__":
         model = MoEMAS(agent_config=config["agents"],
                     graph_type=config["graph_type"],
                     fiedler_value=config["fiedler_value"],
-                    oits=config["max_steps"])
+                    oits=config["max_steps"],
+                    num_labels=config["num_labels"])
 
     # Define the datamodule here
     datamodule = ModularDataModule(
