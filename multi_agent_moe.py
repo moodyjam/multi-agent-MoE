@@ -23,6 +23,9 @@ class MNISTConvNet(nn.Module):
         conv_out_width = 28 - (kernel_size - 1)
         pool_out_width = int(conv_out_width / 2)
         fc1_indim = num_filters * (pool_out_width ** 2)
+        self.linear_width = linear_width
+        self.fc1_indim = fc1_indim
+        self.num_labels = num_labels
 
         # Our f network
         self.encoder = nn.Sequential(
@@ -34,12 +37,11 @@ class MNISTConvNet(nn.Module):
         # Our g network
         # self.gating = nn.Embedding(num_nodes, fc1_indim)
         self.gating = nn.Parameter(torch.randn(num_nodes, fc1_indim))
-            
-        # Our h network
+
         self.specialist = nn.Sequential(
-            nn.Linear(fc1_indim, linear_width),
+            nn.Linear(self.fc1_indim, self.linear_width),
             nn.ReLU(inplace=True),
-            nn.Linear(linear_width, num_labels),
+            nn.Linear(self.linear_width, self.num_labels),
             nn.LogSoftmax(dim=1),
         )
         
@@ -66,7 +68,8 @@ class MultiAgentMoE(L.LightningModule):
                  oits=2000,
                  rho_update=0.0003,
                  topk = 2,
-                 num_labels = 10):
+                 num_labels = 10,
+                 tau = 10):
         super().__init__()
         self.num_nodes = len(agent_config)
         self.G, self.G_connectivity = create_graph(num_nodes = self.num_nodes,
@@ -87,6 +90,7 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
+        self.criterion_no_reduce = torch.nn.NLLLoss(reduce=False)
         self.rho = rho
         
         self.lr_schedule = torch.linspace(
@@ -102,15 +106,16 @@ class MultiAgentMoE(L.LightningModule):
         
         self.save_hyperparameters()
 
-    def calculate_loss(self, own_loss, theta_reg, curr_agent, scores, neighbor_losses):
-        gating_loss = (scores[:, curr_agent.idx] * own_loss.item()).mean()
-        for neighbor_idx in neighbor_losses:
-            gating_loss += (scores[:, neighbor_idx] * neighbor_losses[neighbor_idx]).mean()
-            
+    def calculate_loss(self, own_loss, theta_reg, curr_agent, scores, neighbor_losses, neighbor_indices):
+        gating_idx_mask = torch.tensor([curr_agent.idx] + neighbor_indices).type_as(scores).long()
+        gating_losses = torch.cat([own_loss.unsqueeze(0), neighbor_losses], dim=0)
+        gating_loss = (F.softmax(scores[:,gating_idx_mask] / self.hparams.tau, dim=-1) * gating_losses.T).mean()
+
         theta = torch.cat([torch.nn.utils.parameters_to_vector(curr_agent.model.encoder.parameters()),
                            torch.nn.utils.parameters_to_vector(curr_agent.model.gating)], dim=-1)
         reg = torch.sum(torch.square(torch.cdist(theta.reshape(1, -1), theta_reg)))
-        return own_loss + torch.dot(curr_agent.dual, theta) + self.rho * reg + gating_loss
+        # Should that dot product be negative?
+        return own_loss.mean() + torch.dot(curr_agent.dual, theta) + self.rho * reg + gating_loss
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -148,23 +153,28 @@ class MultiAgentMoE(L.LightningModule):
                 
                 curr_agent.opt.zero_grad()
                 x_encoded = curr_agent.model.encoder(x_split)
-                scores = F.softmax(x_encoded @ curr_agent.model.gating.T, dim=-1)
+                scores = x_encoded @ curr_agent.model.gating.T
                 x_out = curr_agent.model.specialist(x_encoded)
-                own_loss = self.criterion(x_out, y_split)
+                own_loss = self.criterion_no_reduce(x_out, y_split)
                              
                 # Added optimization loop for neighbor losses  
                 # Here more communication would occur 
-                neighbor_losses = dict()
+                neighbor_losses = []
                 for neighbor_idx in neighbor_indices:
                     neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
                     neighbor_agent.opt.zero_grad()
                     neighbor_pred = neighbor_agent.model.specialist(x_encoded.clone().detach())
-                    neighbor_loss = self.criterion(neighbor_pred, y_split)
-                    neighbor_losses[neighbor_idx] = neighbor_loss.item()
-                    self.manual_backward(neighbor_loss)
+                    neighbor_loss = self.criterion_no_reduce(neighbor_pred, y_split)
+                    neighbor_losses.append(neighbor_loss.clone().detach())
+                    self.manual_backward(neighbor_loss.mean())
                     neighbor_agent.opt.step()
                 
-                loss = self.calculate_loss(own_loss, theta_reg, curr_agent=curr_agent, scores=scores, neighbor_losses=neighbor_losses)
+                loss = self.calculate_loss(own_loss,
+                                           theta_reg,
+                                           curr_agent=curr_agent,
+                                           scores=scores,
+                                           neighbor_losses=torch.stack(neighbor_losses),
+                                           neighbor_indices=neighbor_indices)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
