@@ -9,6 +9,7 @@ import torch
 from agent import MixtureOfExpertsAgent
 import torch.nn.functional as F
 import numpy as np
+from datamodule import DATASET_IDX_MAP
 
 # From the code
 class MNISTConvNet(nn.Module):
@@ -52,7 +53,7 @@ class MNISTConvNet(nn.Module):
         return self.seq(x)
 
 # define the LightningModule
-class MoEMAS(L.LightningModule):
+class MultiAgentMoE(L.LightningModule):
     def __init__(self,
                  agent_config,
                  graph_type="complete",
@@ -72,7 +73,7 @@ class MoEMAS(L.LightningModule):
                                                    graph_type = graph_type,
                                                    target_connectivity = fiedler_value)
         
-        base_model = MNISTConvNet()
+        base_model = MNISTConvNet(num_labels=num_labels)
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
         # Initialize the networks for each agent
@@ -81,6 +82,8 @@ class MoEMAS(L.LightningModule):
                                           model=deepcopy(base_model),
                                           idx=i)
                                           for i, agent in enumerate(self.agent_config)})
+        
+        self.dataset_names = list(DATASET_IDX_MAP.keys())
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
@@ -91,6 +94,9 @@ class MoEMAS(L.LightningModule):
                 lr_finish,
                 oits,
             )
+        
+        self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
         
         self.manual_global_step=0
         
@@ -171,17 +177,50 @@ class MoEMAS(L.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        x, y, names = batch
-        all_accs = []
+        x, y, datasets = batch
+        all_encoded = []
+        all_scores = []
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
             x_encoded = curr_agent.model.encoder(x)
-            logits = curr_agent.model.specialist(x_encoded)
-            preds = torch.argmax(logits, dim=1)
-            acc = torch.sum(y == preds).float() / len(y)
-            self.log(f'{agent_id}_val_acc', acc.item(), on_epoch=True, logger=True)
-            all_accs.append(acc.item())
-        self.log(f'val_acc', np.mean(all_accs), on_epoch=True, prog_bar=True, logger=True)
+            all_encoded.append(x_encoded)
+            scores = x_encoded @ curr_agent.model.gating.T
+            all_scores.append(scores)
+            
+        mean_scores = torch.stack(all_scores).mean(0)
+        mean_encoded = torch.stack(all_encoded).mean(0)
+
+        topk = torch.max(mean_scores, dim=-1) # Just output of the best model for now
+        preds = torch.ones_like(topk.indices) * -1
+
+        # For each datapoint, use each of the specialists
+        for agent_id in self.agents:
+            curr_agent = self.agents[agent_id]
+            curr_mask = curr_agent.idx == topk.indices
+            logits = curr_agent.model.specialist(mean_encoded[curr_mask])
+            curr_preds = torch.argmax(logits, dim=-1)
+            preds[curr_mask] = curr_preds
+            self.log(f'{agent_id}_specialist_use', curr_mask.sum().item(), on_epoch=True, logger=True)
+
+        for dataset_idx, dataset in enumerate(self.dataset_names):
+            mask = (datasets == dataset_idx)
+            if mask.sum() > 0:
+                self.val_accs[self.dataset_names[dataset_idx]] += torch.sum(y[mask] == preds[mask]).float()
+                self.val_acc_counts[self.dataset_names[dataset_idx]] += len(y[mask])
+
+    def on_validation_epoch_end(self):
+        # Compute average loss over the epoch
+
+        for dataset_idx, dataset_name in enumerate(self.dataset_names):
+            if self.val_acc_counts[dataset_name] > 0:
+                dataset_acc = self.val_accs[dataset_name] / self.val_acc_counts[dataset_name]
+
+                # Log the average loss
+                self.log(f'{dataset_name}_val_acc', dataset_acc, logger=True, prog_bar=True)
+
+        # Reset for the next epoch
+        self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
 
 
     def configure_optimizers(self):

@@ -31,21 +31,16 @@ def get_custom_collate_fn(dataset_name):
 class DatasetWrapper(Dataset):
     def __init__(self, dataset, dataset_name):
         self.dataset = dataset
-        
-        match dataset_name:
-            case "MNIST":
-                self.dataset_idx = 0
-            case "FashionMNIST":
-                self.dataset_idx = 1
+        self.dataset_name = dataset_name
         
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
+        data, label = self.dataset[idx]
         if self.dataset_name == "FashionMNIST":
             label = label + 10
-        data, label = self.dataset[idx]
-        return data, label, self.dataset_idx
+        return data, label, DATASET_IDX_MAP[self.dataset_name]
 
 
 class ModularDataModule(LightningDataModule):

@@ -3,7 +3,7 @@ import yaml
 import argparse
 from datamodule import ModularDataModule
 from dinno import DiNNO
-from moemas import MoEMAS
+from multi_agent_moe import MultiAgentMoE
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -35,7 +35,7 @@ if __name__=="__main__":
                     fiedler_value=config["fiedler_value"],
                     oits=config["max_steps"])
     else:
-        model = MoEMAS(agent_config=config["agents"],
+        model = MultiAgentMoE(agent_config=config["agents"],
                     graph_type=config["graph_type"],
                     fiedler_value=config["fiedler_value"],
                     oits=config["max_steps"],

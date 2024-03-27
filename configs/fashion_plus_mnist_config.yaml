@@ -41,11 +41,11 @@ agents:
         labels: [8, 9]
 batch_size: 128
 num_workers: 0
-run_name: moemas_fashion_plus_mnist
-algorithm: moemas
+run_name: multi_agent_moe_2_datasets
+algorithm: multi_agent_moe
 max_steps: 2000
 gpus: 1
-accelerator: cpu
+accelerator: gpu
 graph_type: complete
 fiedler_value: 0.7
 num_labels: 20 # This should be the total number of labels across all datasets
