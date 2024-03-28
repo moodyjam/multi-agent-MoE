@@ -45,7 +45,7 @@ run_name: multi_agent_moe_2_datasets
 algorithm: multi_agent_moe
 max_steps: 2000
 gpus: 1
-inner_steps: 4
+inner_steps: 2
 accelerator: cpu
 graph_type: complete
 fiedler_value: 0.7

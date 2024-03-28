@@ -32,14 +32,15 @@ class MNISTConvNet(nn.Module):
             nn.Conv2d(1, num_filters, kernel_size, 1),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
-            nn.Flatten())
+            nn.Flatten(),
+            nn.Linear(self.fc1_indim, self.linear_width))
         
         # Our g network
         # self.gating = nn.Embedding(num_nodes, fc1_indim)
-        self.gating = nn.Parameter(torch.randn(num_nodes, fc1_indim))
+        self.prototype = nn.Parameter(torch.randn(self.linear_width))
 
         self.specialist = nn.Sequential(
-            nn.Linear(self.fc1_indim, self.linear_width),
+            nn.Linear(self.linear_width, self.linear_width),
             nn.ReLU(inplace=True),
             nn.Linear(self.linear_width, self.num_labels),
             nn.LogSoftmax(dim=1),
@@ -83,7 +84,8 @@ class MultiAgentMoE(L.LightningModule):
         self.agent_config = agent_config
         self.agents = nn.ModuleDict({agent["id"]: MixtureOfExpertsAgent(config=agent_config[i],
                                           model=deepcopy(base_model),
-                                          idx=i)
+                                          idx=i,
+                                          id=agent["id"])
                                           for i, agent in enumerate(self.agent_config)})
         
         self.dataset_names = list(DATASET_IDX_MAP.keys())
@@ -106,16 +108,33 @@ class MultiAgentMoE(L.LightningModule):
         
         self.save_hyperparameters()
 
-    def calculate_loss(self, own_loss, theta_reg, curr_agent, scores, neighbor_losses, neighbor_indices):
-        gating_idx_mask = torch.tensor([curr_agent.idx] + neighbor_indices).type_as(scores).long()
-        gating_losses = torch.cat([own_loss.unsqueeze(0), neighbor_losses], dim=0)
-        gating_loss = (F.softmax(scores[:,gating_idx_mask] / self.hparams.tau, dim=-1) * gating_losses.T).mean()
-
-        theta = torch.cat([torch.nn.utils.parameters_to_vector(curr_agent.model.encoder.parameters()),
-                           torch.nn.utils.parameters_to_vector(curr_agent.model.gating)], dim=-1)
+    def calculate_loss(self, x, y, theta_reg, curr_agent, neighbor_prototypes, log=False):
+        x_encoded = curr_agent.model.encoder(x)
+        x_out = curr_agent.model.specialist(x_encoded)
+        aux_loss = self.criterion(x_out, y)
+        
+        # Here learn prototype vectors
+        num_neighbors = neighbor_prototypes.shape[0]
+        curr_prototype_normed = F.normalize(curr_agent.model.prototype, dim=-1).unsqueeze(0)
+        x_encoded_normed = F.normalize(x_encoded, dim=-1)
+        neighbor_prototypes_normed = F.normalize(neighbor_prototypes, dim=-1)
+        sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
+        diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
+        
+        theta = torch.nn.utils.parameters_to_vector(curr_agent.model.encoder.parameters())
         reg = torch.sum(torch.square(torch.cdist(theta.reshape(1, -1), theta_reg)))
+        dual_loss = torch.dot(curr_agent.dual, theta)
+        reg_loss = self.rho * reg
+        
+        if log:
+            self.log(f"{curr_agent.id}_train_sim_loss", sim_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_aux_loss", aux_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_dual_loss", dual_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
+        
         # Should that dot product be negative?
-        return own_loss.mean() + torch.dot(curr_agent.dual, theta) + self.rho * reg + gating_loss
+        return aux_loss + sim_loss + diff_loss + dual_loss + reg_loss
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -126,6 +145,7 @@ class MultiAgentMoE(L.LightningModule):
             curr_agent.set_flattened_params()
         self.rho *= (1 + self.hparams.rho_update) 
         
+        # Set the optimizers for each agent
         for agent_idx, agent_id in enumerate(self.agents):
             curr_agent = self.agents[agent_id]
             curr_agent.opt = optim.Adam(curr_agent.parameters(), lr=self.lr_schedule[self.manual_global_step])
@@ -136,6 +156,7 @@ class MultiAgentMoE(L.LightningModule):
             curr_agent = self.agents[agent_id]     
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
+            neighbor_prototypes = torch.stack([self.agents[self.agent_config[idx]['id']].get_prototype() for idx in neighbor_indices])
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
             theta_reg = (theta + neighbor_params) / 2
@@ -151,34 +172,21 @@ class MultiAgentMoE(L.LightningModule):
                 x_split = x[tau*split_size:(tau+1)*split_size]
                 y_split = y[tau*split_size:(tau+1)*split_size]
                 
-                curr_agent.opt.zero_grad()
-                x_encoded = curr_agent.model.encoder(x_split)
-                scores = x_encoded @ curr_agent.model.gating.T
-                x_out = curr_agent.model.specialist(x_encoded)
-                own_loss = self.criterion_no_reduce(x_out, y_split)
-                             
-                # Added optimization loop for neighbor losses  
-                # Here more communication would occur 
-                neighbor_losses = []
-                for neighbor_idx in neighbor_indices:
-                    neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
-                    neighbor_agent.opt.zero_grad()
-                    neighbor_pred = neighbor_agent.model.specialist(x_encoded.clone().detach())
-                    neighbor_loss = self.criterion_no_reduce(neighbor_pred, y_split)
-                    neighbor_losses.append(neighbor_loss.clone().detach())
-                    self.manual_backward(neighbor_loss.mean())
-                    neighbor_agent.opt.step()
+                if tau == 0:
+                    log = True
+                else:
+                    log = False
                 
-                loss = self.calculate_loss(own_loss,
+                curr_agent.opt.zero_grad()
+                loss = self.calculate_loss(x_split,
+                                           y_split,
                                            theta_reg,
                                            curr_agent=curr_agent,
-                                           scores=scores,
-                                           neighbor_losses=torch.stack(neighbor_losses),
-                                           neighbor_indices=neighbor_indices)
+                                           neighbor_prototypes=neighbor_prototypes,
+                                           log = log)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
-            self.log(f"{agent_id}_train_loss", loss, logger=True)
             all_losses.append(loss.item())
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
         
@@ -188,26 +196,21 @@ class MultiAgentMoE(L.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         x, y, datasets = batch
-        all_encoded = []
-        all_scores = []
-        for agent_id in self.agents:
-            curr_agent = self.agents[agent_id]
-            x_encoded = curr_agent.model.encoder(x)
-            all_encoded.append(x_encoded)
-            scores = x_encoded @ curr_agent.model.gating.T
-            all_scores.append(scores)
-            
-        mean_scores = torch.stack(all_scores).mean(0)
-        mean_encoded = torch.stack(all_encoded).mean(0)
-
-        topk = torch.max(mean_scores, dim=-1) # Just output of the best model for now
-        preds = torch.ones_like(topk.indices) * -1
+        
+        encode_agent = self.agents[self.agent_config[0]["id"]]
+        x_encoded = encode_agent.model.encoder(x)
+        
+        # Routing mechanism
+        all_prototypes = torch.stack([self.agents[agent_id].get_prototype() for agent_id in self.agents])
+        sims = F.normalize(all_prototypes, dim=-1) @ F.normalize(x_encoded, dim=-1).T
+        routing = sims.argmax(0)
+        preds = torch.ones_like(y) * -1
 
         # For each datapoint, use each of the specialists
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
-            curr_mask = curr_agent.idx == topk.indices
-            logits = curr_agent.model.specialist(mean_encoded[curr_mask])
+            curr_mask = curr_agent.idx == routing
+            logits = curr_agent.model.specialist(x_encoded[curr_mask])
             curr_preds = torch.argmax(logits, dim=-1)
             preds[curr_mask] = curr_preds
             self.log(f'{agent_id}_specialist_use', curr_mask.sum().item(), on_epoch=True, logger=True)
