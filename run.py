@@ -42,7 +42,8 @@ if __name__=="__main__":
                     num_labels=config["num_labels"],
                     lr_start=config["lr_start"],
                     lr_finish=config["lr_finish"],
-                    B=config["inner_steps"])
+                    B=config["inner_steps"],
+                    rho=config["rho"])
 
     # Define the datamodule here
     datamodule = ModularDataModule(
