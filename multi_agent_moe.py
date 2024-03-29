@@ -28,6 +28,7 @@ class MultiAgentMoE(L.LightningModule):
                  topk = 2,
                  num_labels = 10,
                  tau = 10):
+        
         super().__init__()
         self.num_nodes = len(agent_config)
         self.G, self.G_connectivity = create_graph(num_nodes = self.num_nodes,
@@ -37,13 +38,16 @@ class MultiAgentMoE(L.LightningModule):
         base_encoder = SimpleEncoder()
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
+        encoder_out_dim = 16*5*5
+        base_prototypes = torch.rand(self.num_nodes, encoder_out_dim) * 2 - 1
+
         # Initialize the networks for each agent
         self.agent_config = agent_config
         self.agents = nn.ModuleDict({agent["id"]: MixtureOfExpertsAgent(config=agent_config[i],
                                           encoder=deepcopy(base_encoder),
                                           idx=i,
                                           id=agent["id"],
-                                          encoder_out_dim=16*5*5,
+                                          prototypes=base_prototypes,
                                           num_labels=num_labels) # Change this if needed to adjust for a different encoder
                                           for i, agent in enumerate(self.agent_config)})
         
@@ -51,7 +55,6 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
-        self.criterion_no_reduce = torch.nn.NLLLoss(reduce=False)
         self.rho = rho
         
         self.lr_schedule = torch.linspace(
@@ -102,6 +105,7 @@ class MultiAgentMoE(L.LightningModule):
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
             curr_agent.set_flattened_params()
+            curr_agent.update_own_prototype(self.manual_global_step)
         self.rho *= (1 + self.hparams.rho_update) 
         
         # Set the optimizers for each agent
@@ -116,6 +120,13 @@ class MultiAgentMoE(L.LightningModule):
             curr_agent = self.agents[agent_id]     
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
+
+            # Now align the prototypes from the neighbors
+            for neighbor_idx in neighbor_indices:
+                neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
+                neighbor_prototypes, neighbor_timestamps = neighbor_agent.get_all_prototypes()
+                curr_agent.update_other_prototypes(neighbor_prototypes, neighbor_timestamps)
+
             neighbor_prototypes = torch.stack([self.agents[self.agent_config[idx]['id']].get_prototype() for idx in all_indices if idx != curr_agent.idx])
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
@@ -151,6 +162,8 @@ class MultiAgentMoE(L.LightningModule):
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
         
         self.manual_global_step += 1
+        if self.manual_global_step >= self.trainer.max_steps:
+            self.trainer.should_stop = True  # This will gracefully end the training
 
         return loss
     

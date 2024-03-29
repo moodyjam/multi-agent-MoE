@@ -18,7 +18,7 @@
             "request": "launch",
             "program": "run.py",
             "console": "integratedTerminal",
-            "args": ["--config=configs/fashion_plus_mnist_config.yaml"]
+            "args": ["--config=configs/multi_agent_moe_4_datasets.yaml"]
         }
     ]
 }

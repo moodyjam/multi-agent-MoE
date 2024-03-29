@@ -85,17 +85,18 @@ class BasicBlock(nn.Module):
         return out
 
 
-class ResNet(nn.Module):
+class ResNetEncoder(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10):
-        super(ResNet, self).__init__()
+        super(ResNetEncoder, self).__init__()
         self.in_planes = 16
 
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
-        self.linear = nn.Linear(64, num_classes)
+        self.layer3 = self._make_layer(block, 128, num_blocks[2], stride=2)
+        self.linear1 = nn.Linear(128, 64)
+        self.linear2 = nn.Linear(64, num_classes)
 
         self.apply(_weights_init)
 
@@ -114,34 +115,45 @@ class ResNet(nn.Module):
         out = self.layer2(out)
         out = self.layer3(out)
         out = F.avg_pool2d(out, out.size()[3])
-        out = out.view(out.size(0), -1)
-        out = self.linear(out)
-        out = F.log_softmax(out, dim=1),
+        encoded = out.view(out.size(0), -1)
         return out[0]
+    
+    
+class TwoLayerNN(nn.Module):
+    def __init__(self, num_classes):
+        super(TwoLayerNN, self).__init__()
+        self.fc1 = nn.Linear(128, 64)  # First layer: 128 to 64 units
+        self.fc2 = nn.Linear(64, num_classes)  # Second layer: 64 to num_classes units
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))  # Apply ReLU activation function after first layer
+        x = self.fc2(x)  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
+        x = F.log_softmax(x, dim=1)
+        return x
 
 
 def resnet20():
-    return ResNet(BasicBlock, [3, 3, 3])
+    return ResNetEncoder(BasicBlock, [3, 3, 3])
 
 
-def resnet32():
-    return ResNet(BasicBlock, [5, 5, 5])
+# def resnet32():
+#     return ResNet(BasicBlock, [5, 5, 5])
 
 
-def resnet44():
-    return ResNet(BasicBlock, [7, 7, 7])
+# def resnet44():
+#     return ResNet(BasicBlock, [7, 7, 7])
 
 
-def resnet56():
-    return ResNet(BasicBlock, [9, 9, 9])
+# def resnet56():
+#     return ResNet(BasicBlock, [9, 9, 9])
 
 
-def resnet110():
-    return ResNet(BasicBlock, [18, 18, 18])
+# def resnet110():
+#     return ResNet(BasicBlock, [18, 18, 18])
 
 
-def resnet1202():
-    return ResNet(BasicBlock, [200, 200, 200])
+# def resnet1202():
+#     return ResNet(BasicBlock, [200, 200, 200])
 
 
 def test(net):
@@ -158,5 +170,8 @@ if __name__ == "__main__":
     for net_name in __all__:
         if net_name.startswith('resnet'):
             print(net_name)
-            test(globals()[net_name]())
+            net =  globals()[net_name]()
+            test(net)
+            input = torch.randn(32, 3, 32, 32)
+            net(input)
             print()

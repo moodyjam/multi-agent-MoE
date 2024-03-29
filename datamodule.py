@@ -120,7 +120,7 @@ class ModularDataModule(LightningDataModule):
         elif dataset_name == 'CIFAR-10':
             return datasets.CIFAR10(self.data_dir, train=train, download=True, transform=transform)
         elif dataset_name == 'SVHN':
-            return datasets.SVHN(self.data_dir, train=train, download=True, transform=transform)
+            return datasets.SVHN(self.data_dir, split= 'train' if train else 'test', download=True, transform=transform)
         elif dataset_name == 'KMNIST':
             return datasets.KMNIST(self.data_dir, train=train, download=True, transform=transform)
         # Add Datasets Here
@@ -157,11 +157,17 @@ class ModularDataModule(LightningDataModule):
                 train_indices_dict, val_indices_dict, test_indices_dict = dict(), dict(), dict()
 
                 # Each dataset must have a targets property that allows you to access all the targets in the dataset
-                unique_labels = train_dataset.targets.unique()
+                try:
+                    targets = np.array(train_dataset.targets)
+                except AttributeError:
+                    targets = np.array(train_dataset.labels)
+                
+                unique_labels = np.unique(targets)
+                    
                 for label in unique_labels:
                     label = label.item()
-                    train_indices_dict[label] = list(np.where(train_dataset.targets == label)[0])
-                    test_indices_dict[label] = list(np.where(test_dataset.targets == label)[0])
+                    train_indices_dict[label] = list(np.where(targets == label)[0])
+                    test_indices_dict[label] = list(np.where(targets == label)[0])
 
                     # Shuffle indices
                     np.random.shuffle(train_indices_dict[label])
@@ -193,6 +199,9 @@ class ModularDataModule(LightningDataModule):
             self.agent_datasets[agent_id]["train"] = ConcatDataset(agent_train_dataset)
             self.agent_datasets[agent_id]["val"] = ConcatDataset(agent_val_dataset)
             self.agent_datasets[agent_id]["test"] = ConcatDataset(agent_test_dataset)
+
+            if len(self.agent_datasets[agent_id]["train"]) == 0 or len(self.agent_datasets[agent_id]["val"]) == 0 or len(self.agent_datasets[agent_id]["test"]) == 0:
+                raise ValueError
 
     def train_dataloader(self):
         # Combine MNIST and Fashion MNIST training subsets
