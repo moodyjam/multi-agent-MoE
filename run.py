@@ -29,7 +29,8 @@ def get_model(config):
                     lr_finish=config["lr_finish"],
                     B=config["inner_steps"],
                     rho=config["rho"],
-                    rho_update=config["rho_update"])
+                    rho_update=config["rho_update"],
+                    prototype_dim=config["prototype_dim"])
         
     return model
 

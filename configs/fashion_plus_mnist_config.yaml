@@ -47,7 +47,7 @@ max_steps: 2000
 gpus: 1
 inner_steps: 2
 accelerator: gpu
-graph_type: random
+graph_type: complete
 fiedler_value: 0.7
 num_labels: 20 # This should be the total number of labels across all datasets
 lr_start: 0.005

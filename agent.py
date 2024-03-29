@@ -1,7 +1,8 @@
 import torch.nn as nn
 import torch
 from torch import optim
-from resnet_encoder import ResNet, BasicBlock
+from resnet import ResNet, BasicBlock
+import numpy as np
 
 class Agent(nn.Module):
    def __init__(self, config, model, idx, num_labels):
@@ -22,13 +23,14 @@ class Agent(nn.Module):
 class MixtureOfExpertsAgent(nn.Module):
    def __init__(self, num_agents, encoder, idx, id, num_labels, prototypes):
       super(MixtureOfExpertsAgent, self).__init__()
-      self.model = ResNet(BasicBlock, [3, 3, 3], num_classes=num_labels) # Initialize a brand new resnet20 per agent
+      self.model = ResNet(BasicBlock, [3, 3, 3], num_labels)
       self.encoder = encoder
       self.idx = idx
       self.prototype = nn.Parameter(prototypes[idx])
       self.encoder_flattened = torch.nn.utils.parameters_to_vector(self.encoder.parameters()).clone().detach()
       self.register_buffer("dual", torch.zeros_like(self.encoder_flattened))
       self.register_buffer("all_prototypes", prototypes.clone().detach())
+      self.register_buffer("excluded_indices", torch.tensor([i for i in range(num_agents) if i != self.idx]))
       self.update_timestamps = {agent_idx: 0 for agent_idx in range(num_agents)}
       self.id = id
       
@@ -52,6 +54,9 @@ class MixtureOfExpertsAgent(nn.Module):
    
    def get_all_prototypes(self):
       return self.all_prototypes, self.update_timestamps
+   
+   def get_all_other_prototypes(self):
+      return self.all_prototypes[self.excluded_indices]
    
    def get_prototype(self):
       own_prototype = self.prototype.clone().detach()

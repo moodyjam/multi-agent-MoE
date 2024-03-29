@@ -15,6 +15,19 @@ DATASET_IDX_MAP = {
     "KMNIST": 4
 }
 
+DATASET_AGENT_MAP = {
+    ("MNIST", True) : 0,
+    ("MNIST", False) : 1,
+    ("FashionMNIST", True) : 2,
+    ("FashionMNIST", False) : 3,
+    ("CIFAR-10", True) : 4,
+    ("CIFAR-10", False) : 5,
+    ("SVHN", True) : 6,
+    ("SVHN", False) : 7,
+    ("KMNIST", True) : 8,
+    ("KMNIST", False) : 9,
+}
+
 def get_custom_collate_fn(dataset_name):
     def custom_collate_fn(batch):
         # Now, dataset_name is accessible here as a closure variable
@@ -42,8 +55,10 @@ class DatasetWrapper(Dataset):
 
     def __getitem__(self, idx):
         data, label = self.dataset[idx]
+        agent_idx = DATASET_AGENT_MAP[(self.dataset_name, label < 5)]
         label = label + self.labels_map[self.dataset_name]
-        return data, label, DATASET_IDX_MAP[self.dataset_name]
+        
+        return data, label, DATASET_IDX_MAP[self.dataset_name], agent_idx
 
 
 class ModularDataModule(LightningDataModule):

@@ -3,17 +3,24 @@ import torch.nn.functional as F
 import torch
 
 # Taken from https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html
-class SimpleEncoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
+class SimpleImageEncoder(nn.Module):
+    def __init__(self, prototype_dim=512):
+        super(SimpleImageEncoder, self).__init__()
+
+        # Reduce the number of filters in each layer to decrease the model size
+        self.conv1 = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)   # Output: 8x32x32
+        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, stride=2, padding=1)  # Output: 16x16x16
+        self.conv3 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1) # Output: 32x8x8
+
+        # Flatten and pass through a linear layer to get the desired output dimension
+        self.fc = nn.Linear(32 * 8 * 8, prototype_dim)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1) # flatten all dimensions except batch
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)  # Flatten the features into a vector
+        x = self.fc(x)
         return x
     
     

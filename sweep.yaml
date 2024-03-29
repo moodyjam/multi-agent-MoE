@@ -6,15 +6,15 @@ early_terminate:
     max_iter: 10
     eta: 3
 metric:
-  name: CIFAR-10_val_acc
+  name: total_routing_acc
   goal: maximize
 parameters:
   lr_start:
-    min: 0.001
+    min: 0.0001
     max: 0.01
     distribution: log_uniform_values
   lr_finish:
-    min: 0.0001
+    min: 0.00001
     max: 0.001
     distribution: log_uniform_values
   inner_steps:
@@ -27,7 +27,15 @@ parameters:
     min: 0.001
     max: 0.0001
     distribution: uniform_values
-  max_steps:
-    value: [2000, 5000, 10000]
+  routing_weight:
+    min: 0.1
+    max: 10.0
+    distribution: log_uniform_values
+  dinno_weight:
+    min: 0.1
+    max: 10.0
+    distribution: log_uniform_values
+  prototype_dim:
+    value: [128, 256, 512, 1024]
 
 

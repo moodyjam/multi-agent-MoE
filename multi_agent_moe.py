@@ -9,8 +9,9 @@ import torch
 from agent import MixtureOfExpertsAgent
 import torch.nn.functional as F
 import numpy as np
-from models import SimpleEncoder
+from models import SimpleImageEncoder
 from datamodule import DATASET_IDX_MAP
+from resnet_encoder import ResNetEncoder, BasicBlock, TwoLayerNN
 
 # define the LightningModule
 class MultiAgentMoE(L.LightningModule):
@@ -27,7 +28,10 @@ class MultiAgentMoE(L.LightningModule):
                  rho_update=0.0003,
                  topk = 2,
                  num_labels = 10,
-                 tau = 10):
+                 prototype_dim = 128,
+                 routing_weight = 1.0,
+                 dinno_weight = 1.0,
+                 use_max_diff = True):
         
         super().__init__()
         self.num_nodes = len(agent_config)
@@ -35,15 +39,14 @@ class MultiAgentMoE(L.LightningModule):
                                                    graph_type = graph_type,
                                                    target_connectivity = fiedler_value)
         
-        base_encoder = SimpleEncoder()
+        base_encoder = SimpleImageEncoder(prototype_dim) # ResNetEncoder(BasicBlock, [3, 3, 3], prototype_dim)
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
-        encoder_out_dim = 16*5*5
-        base_prototypes = torch.rand(self.num_nodes, encoder_out_dim) * 2 - 1
+        base_prototypes = torch.rand(self.num_nodes, prototype_dim) * 2 - 1
 
         # Initialize the networks for each agent
         self.agent_config = agent_config
-        self.agents = nn.ModuleDict({agent["id"]: MixtureOfExpertsAgent(config=agent_config[i],
+        self.agents = nn.ModuleDict({agent["id"]: MixtureOfExpertsAgent(num_agents=self.num_nodes,
                                           encoder=deepcopy(base_encoder),
                                           idx=i,
                                           id=agent["id"],
@@ -65,23 +68,32 @@ class MultiAgentMoE(L.LightningModule):
         
         self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
         self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
+
+        self.val_accs_oracle = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts_oracle = {dataset_name: 0 for dataset_name in self.dataset_names}
+
+        self.agent_routing_accs = {agent["id"]: 0.0 for agent in self.agent_config}
+        self.agent_routing_counts = {agent["id"]: 0 for agent in self.agent_config}
         
         self.manual_global_step=0
         
         self.save_hyperparameters()
 
-    def calculate_loss(self, x, y, theta_reg, curr_agent, neighbor_prototypes, log=False):
+    def calculate_loss(self, x, y, theta_reg, curr_agent, log=False):
         x_encoded = curr_agent.encoder(x)
         x_out = curr_agent.model(x)
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
-        num_neighbors = neighbor_prototypes.shape[0]
         curr_prototype_normed = F.normalize(curr_agent.prototype, dim=-1).unsqueeze(0)
         x_encoded_normed = F.normalize(x_encoded, dim=-1)
-        neighbor_prototypes_normed = F.normalize(neighbor_prototypes, dim=-1)
+        neighbor_prototypes_normed = F.normalize(curr_agent.get_all_other_prototypes(), dim=-1)
         sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
-        diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
+
+        if self.hparams.use_max_diff:
+            diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
+        else:
+            diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
         
         theta = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
         reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
@@ -96,7 +108,7 @@ class MultiAgentMoE(L.LightningModule):
             self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
         
         # Should that dot product be negative?
-        return aux_loss + sim_loss + diff_loss + dual_loss + reg_loss
+        return aux_loss + self.hparams.routing_weight * (sim_loss + diff_loss) + self.hparams.dinno_weight * (dual_loss + reg_loss)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -127,12 +139,11 @@ class MultiAgentMoE(L.LightningModule):
                 neighbor_prototypes, neighbor_timestamps = neighbor_agent.get_all_prototypes()
                 curr_agent.update_other_prototypes(neighbor_prototypes, neighbor_timestamps)
 
-            neighbor_prototypes = torch.stack([self.agents[self.agent_config[idx]['id']].get_prototype() for idx in all_indices if idx != curr_agent.idx])
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
             theta_reg = (theta + neighbor_params) / 2
             curr_batch = batch[curr_agent.idx]
-            x, y, names = curr_batch
+            x, y, names, agent_indices = curr_batch
             split_size = x.shape[0] // self.hparams.B
             
             if agent_idx == 0:
@@ -152,8 +163,7 @@ class MultiAgentMoE(L.LightningModule):
                 loss = self.calculate_loss(x_split,
                                            y_split,
                                            theta_reg,
-                                           curr_agent=curr_agent,
-                                           neighbor_prototypes=neighbor_prototypes,
+                                           curr_agent = curr_agent,
                                            log = log)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
@@ -168,7 +178,7 @@ class MultiAgentMoE(L.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        x, y, datasets = batch
+        x, y, datasets, agent_indices = batch
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
         x_encoded = encode_agent.encoder(x)
@@ -178,22 +188,37 @@ class MultiAgentMoE(L.LightningModule):
         sims = F.normalize(all_prototypes, dim=-1) @ F.normalize(x_encoded, dim=-1).T
         routing = sims.argmax(0)
         preds = torch.ones_like(y) * -1
+        oracle_preds = torch.ones_like(y) * -1
 
         # For each datapoint, use each of the specialists
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
             curr_mask = curr_agent.idx == routing
+            oracle_mask = curr_agent.idx == agent_indices
+
+            if oracle_mask.sum() > 0:
+                self.agent_routing_accs[agent_id] += (curr_mask & oracle_mask).sum()
+                self.agent_routing_counts[agent_id] += oracle_mask.sum()
+
+                # Evaluate on the oracle mask
+                logits_oracle = curr_agent.model(x[oracle_mask])
+                curr_oracle_preds = torch.argmax(logits_oracle, dim=-1)
+                oracle_preds[oracle_mask] = curr_oracle_preds
+
             if curr_mask.sum() > 0:
                 logits = curr_agent.model(x[curr_mask])
                 curr_preds = torch.argmax(logits, dim=-1)
                 preds[curr_mask] = curr_preds
-                self.log(f'{agent_id}_specialist_use', curr_mask.sum().item(), on_epoch=True, logger=True)
+                self.log(f'{agent_id}_use', curr_mask.sum().item(), on_epoch=True, logger=True)
 
         for dataset_idx, dataset in enumerate(self.dataset_names):
             mask = (datasets == dataset_idx)
             if mask.sum() > 0:
                 self.val_accs[self.dataset_names[dataset_idx]] += torch.sum(y[mask] == preds[mask]).float()
                 self.val_acc_counts[self.dataset_names[dataset_idx]] += len(y[mask])
+
+                self.val_accs_oracle[self.dataset_names[dataset_idx]] += torch.sum(y[mask] == oracle_preds[mask]).float()
+                self.val_acc_counts_oracle[self.dataset_names[dataset_idx]] += len(y[mask])
 
     def on_validation_epoch_end(self):
         # Compute average loss over the epoch
@@ -202,12 +227,32 @@ class MultiAgentMoE(L.LightningModule):
             if self.val_acc_counts[dataset_name] > 0:
                 dataset_acc = self.val_accs[dataset_name] / self.val_acc_counts[dataset_name]
 
-                # Log the average loss
+                # Log the accuracy
                 self.log(f'{dataset_name}_val_acc', dataset_acc, logger=True, prog_bar=True)
+
+            if self.val_acc_counts_oracle[dataset_name] > 0:
+                dataset_acc = self.val_accs_oracle[dataset_name] / self.val_acc_counts_oracle[dataset_name]
+                self.log(f'{dataset_name}_val_acc_oracle', dataset_acc, logger=True)
+
+        total_routing_accs = []
+        for agent in self.agent_config:
+            if self.agent_routing_counts[agent["id"]] > 0:
+                agent_routing_acc = self.agent_routing_accs[agent["id"]] / self.agent_routing_counts[agent["id"]]
+                self.log(f'{agent["id"]}_routing_acc', agent_routing_acc, logger=True)
+                total_routing_accs.append(agent_routing_acc.item())
+
+        # Calculate the total routing accuracy
+        self.log(f'total_routing_acc', np.mean(total_routing_accs), logger=True)
 
         # Reset for the next epoch
         self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
         self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
+
+        self.val_accs_oracle = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts_oracle = {dataset_name: 0 for dataset_name in self.dataset_names}
+
+        self.agent_routing_accs = {agent["id"]: 0.0 for agent in self.agent_config}
+        self.agent_routing_counts = {agent["id"]: 0 for agent in self.agent_config}
 
 
     def configure_optimizers(self):
