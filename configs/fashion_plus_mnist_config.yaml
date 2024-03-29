@@ -40,16 +40,17 @@ agents:
       - dataset: FashionMNIST
         labels: [8, 9]
 batch_size: 128
-num_workers: 0
+num_workers: 2
 run_name: multi_agent_moe_2_datasets
 algorithm: multi_agent_moe
 max_steps: 2000
 gpus: 1
 inner_steps: 2
-accelerator: cpu
-graph_type: complete
+accelerator: gpu
+graph_type: random
 fiedler_value: 0.7
 num_labels: 20 # This should be the total number of labels across all datasets
 lr_start: 0.005
 lr_finish: 0.0005
 rho: 0.5
+project: multi_agent_moe

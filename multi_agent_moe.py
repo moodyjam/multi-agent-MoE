@@ -9,51 +9,8 @@ import torch
 from agent import MixtureOfExpertsAgent
 import torch.nn.functional as F
 import numpy as np
+from models import SimpleEncoder
 from datamodule import DATASET_IDX_MAP
-
-# From the code
-class MNISTConvNet(nn.Module):
-    """Implements a basic convolutional neural network with one
-    convolutional layer and two subsequent linear layers for the MNIST
-    classification problem.
-    """
-
-    def __init__(self, num_filters=3, kernel_size=5, linear_width=64, num_nodes=10, num_labels=10):
-        super().__init__()
-        conv_out_width = 28 - (kernel_size - 1)
-        pool_out_width = int(conv_out_width / 2)
-        fc1_indim = num_filters * (pool_out_width ** 2)
-        self.linear_width = linear_width
-        self.fc1_indim = fc1_indim
-        self.num_labels = num_labels
-
-        # Our f network
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, num_filters, kernel_size, 1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            nn.Flatten(),
-            nn.Linear(self.fc1_indim, self.linear_width))
-        
-        # Our g network
-        # self.gating = nn.Embedding(num_nodes, fc1_indim)
-        self.prototype = nn.Parameter(torch.randn(self.linear_width))
-
-        self.specialist = nn.Sequential(
-            nn.Linear(self.linear_width, self.linear_width),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.linear_width, self.num_labels),
-            nn.LogSoftmax(dim=1),
-        )
-        
-    def encode(self, x):
-        return self.encoder(x)
-    
-    def get_scores(self, x):
-        print()
-
-    def forward(self, x):
-        return self.seq(x)
 
 # define the LightningModule
 class MultiAgentMoE(L.LightningModule):
@@ -77,15 +34,17 @@ class MultiAgentMoE(L.LightningModule):
                                                    graph_type = graph_type,
                                                    target_connectivity = fiedler_value)
         
-        base_model = MNISTConvNet(num_labels=num_labels)
+        base_encoder = SimpleEncoder()
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
         # Initialize the networks for each agent
         self.agent_config = agent_config
         self.agents = nn.ModuleDict({agent["id"]: MixtureOfExpertsAgent(config=agent_config[i],
-                                          model=deepcopy(base_model),
+                                          encoder=deepcopy(base_encoder),
                                           idx=i,
-                                          id=agent["id"])
+                                          id=agent["id"],
+                                          encoder_out_dim=16*5*5,
+                                          num_labels=num_labels) # Change this if needed to adjust for a different encoder
                                           for i, agent in enumerate(self.agent_config)})
         
         self.dataset_names = list(DATASET_IDX_MAP.keys())
@@ -109,20 +68,20 @@ class MultiAgentMoE(L.LightningModule):
         self.save_hyperparameters()
 
     def calculate_loss(self, x, y, theta_reg, curr_agent, neighbor_prototypes, log=False):
-        x_encoded = curr_agent.model.encoder(x)
-        x_out = curr_agent.model.specialist(x_encoded)
+        x_encoded = curr_agent.encoder(x)
+        x_out = curr_agent.model(x)
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
         num_neighbors = neighbor_prototypes.shape[0]
-        curr_prototype_normed = F.normalize(curr_agent.model.prototype, dim=-1).unsqueeze(0)
+        curr_prototype_normed = F.normalize(curr_agent.prototype, dim=-1).unsqueeze(0)
         x_encoded_normed = F.normalize(x_encoded, dim=-1)
         neighbor_prototypes_normed = F.normalize(neighbor_prototypes, dim=-1)
         sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
         diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
         
-        theta = torch.nn.utils.parameters_to_vector(curr_agent.model.encoder.parameters())
-        reg = torch.sum(torch.square(torch.cdist(theta.reshape(1, -1), theta_reg)))
+        theta = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
+        reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
         dual_loss = torch.dot(curr_agent.dual, theta)
         reg_loss = self.rho * reg
         
@@ -152,11 +111,12 @@ class MultiAgentMoE(L.LightningModule):
 
         # Technically this can be done in parallel
         all_losses = []
+        all_indices = np.arange(len(self.agents))
         for agent_idx, agent_id in enumerate(self.agents):
             curr_agent = self.agents[agent_id]     
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
-            neighbor_prototypes = torch.stack([self.agents[self.agent_config[idx]['id']].get_prototype() for idx in neighbor_indices])
+            neighbor_prototypes = torch.stack([self.agents[self.agent_config[idx]['id']].get_prototype() for idx in all_indices if idx != curr_agent.idx])
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
             theta_reg = (theta + neighbor_params) / 2
@@ -198,7 +158,7 @@ class MultiAgentMoE(L.LightningModule):
         x, y, datasets = batch
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
-        x_encoded = encode_agent.model.encoder(x)
+        x_encoded = encode_agent.encoder(x)
         
         # Routing mechanism
         all_prototypes = torch.stack([self.agents[agent_id].get_prototype() for agent_id in self.agents])
@@ -210,10 +170,11 @@ class MultiAgentMoE(L.LightningModule):
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
             curr_mask = curr_agent.idx == routing
-            logits = curr_agent.model.specialist(x_encoded[curr_mask])
-            curr_preds = torch.argmax(logits, dim=-1)
-            preds[curr_mask] = curr_preds
-            self.log(f'{agent_id}_specialist_use', curr_mask.sum().item(), on_epoch=True, logger=True)
+            if curr_mask.sum() > 0:
+                logits = curr_agent.model(x[curr_mask])
+                curr_preds = torch.argmax(logits, dim=-1)
+                preds[curr_mask] = curr_preds
+                self.log(f'{agent_id}_specialist_use', curr_mask.sum().item(), on_epoch=True, logger=True)
 
         for dataset_idx, dataset in enumerate(self.dataset_names):
             mask = (datasets == dataset_idx)

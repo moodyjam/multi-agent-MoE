@@ -9,7 +9,10 @@ from torch.utils.data import Dataset
 
 DATASET_IDX_MAP = {
     "MNIST": 0,
-    "FashionMNIST": 1
+    "FashionMNIST": 1,
+    "CIFAR-10": 2,
+    "SVHN": 3,
+    "KMNIST": 4
 }
 
 def get_custom_collate_fn(dataset_name):
@@ -32,14 +35,14 @@ class DatasetWrapper(Dataset):
     def __init__(self, dataset, dataset_name):
         self.dataset = dataset
         self.dataset_name = dataset_name
+        self.labels_map = {'MNIST': 0, 'FashionMNIST': 10, 'CIFAR-10': 20, 'SVHN': 30, 'KMNIST': 40}
         
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         data, label = self.dataset[idx]
-        if self.dataset_name == "FashionMNIST":
-            label = label + 10
+        label = label + self.labels_map[self.dataset_name]
         return data, label, DATASET_IDX_MAP[self.dataset_name]
 
 
@@ -65,21 +68,36 @@ class ModularDataModule(LightningDataModule):
             for i in range(num_agent_datasets):
                 if agent['data'][i]['dataset'] not in self.dataset_names:
                     self.dataset_names.append(agent['data'][i]['dataset'])
-                    
-        self.labels_map = {'MNIST': 0, 'FashionMNIST': 10}
 
         self.cache_dir = cache_dir
 
         self.transforms = custom_transforms or {
             'MNIST': transforms.Compose([
-                transforms.ToTensor(),  # Converts images to PyTorch tensors with values in [0, 1]
-                transforms.Normalize((0.5,), (0.5,))  # Normalizes tensors to have mean 0.5 and std 0.5
+                transforms.Resize((32, 32)),
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ]),
             'FashionMNIST': transforms.Compose([
-                transforms.ToTensor(),  # Converts images to PyTorch tensors with values in [0, 1]
-                transforms.Normalize((0.5,), (0.5,))  # Normalizes tensors to have mean 0.5 and std 0.5
+                transforms.Resize((32, 32)),
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ]),
-            # Add default transforms for other datasets
+            'CIFAR-10': transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ]),
+            'SVHN': transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ]),
+            'KMNIST': transforms.Compose([
+                transforms.Resize((32, 32)),
+                transforms.Grayscale(num_output_channels=3),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ]),
         }
 
         self.cache = self.load_cache()
@@ -99,6 +117,12 @@ class ModularDataModule(LightningDataModule):
             return datasets.MNIST(self.data_dir, train=train, download=True, transform=transform)
         elif dataset_name == 'FashionMNIST':
             return datasets.FashionMNIST(self.data_dir, train=train, download=True, transform=transform)
+        elif dataset_name == 'CIFAR-10':
+            return datasets.CIFAR10(self.data_dir, train=train, download=True, transform=transform)
+        elif dataset_name == 'SHVN':
+            return datasets.SVHN(self.data_dir, train=train, download=True, transform=transform)
+        elif dataset_name == 'KMNIST':
+            return datasets.KMNIST(self.data_dir, train=train, download=True, transform=transform)
         # Add Datasets Here
         else:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
@@ -176,7 +200,8 @@ class ModularDataModule(LightningDataModule):
                                   batch_size=self.hparams.batch_size,
                                   shuffle=True,
                                   pin_memory=True,
-                                  num_workers=self.hparams.num_workers) for agent in self.agent_config]
+                                  num_workers=self.hparams.num_workers,
+                                  persistent_workers=True) for agent in self.agent_config]
         return dataloaders
 
     def val_dataloader(self):
@@ -186,7 +211,8 @@ class ModularDataModule(LightningDataModule):
                                 batch_size=self.hparams.batch_size,
                                 shuffle=False,
                                 pin_memory=True,
-                                num_workers=self.hparams.num_workers)
+                                num_workers=self.hparams.num_workers,
+                                persistent_workers=True)
         return dataloader
     
     def test_dataloader(self):
@@ -196,7 +222,8 @@ class ModularDataModule(LightningDataModule):
                                 batch_size=self.hparams.batch_size,
                                 shuffle=False,
                                 pin_memory=True,
-                                num_workers=self.hparams.num_workers)
+                                num_workers=self.hparams.num_workers,
+                                persistent_workers=True)
         return dataloader
 
 

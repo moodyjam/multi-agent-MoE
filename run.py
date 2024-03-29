@@ -25,7 +25,7 @@ if __name__=="__main__":
     current_time = datetime.now()
     formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")
 
-    wandb_logger = WandbLogger(project="dinno", id=f"{config['run_name']}_{formatted_time}", log_model='all')
+    wandb_logger = WandbLogger(project=config["project"], id=f"{config['run_name']}_{formatted_time}", log_model='all')
     checkpoint_callback = ModelCheckpoint(monitor="val_acc", mode="max")
 
     # Define your model here
@@ -59,6 +59,7 @@ if __name__=="__main__":
         accelerator=config['accelerator'],
         callbacks=[checkpoint_callback],
         logger=wandb_logger,
+        # limit_train_batches=.1,
     )
     
     trainer.fit(model, datamodule=datamodule)
