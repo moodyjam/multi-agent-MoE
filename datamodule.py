@@ -119,7 +119,7 @@ class ModularDataModule(LightningDataModule):
             return datasets.FashionMNIST(self.data_dir, train=train, download=True, transform=transform)
         elif dataset_name == 'CIFAR-10':
             return datasets.CIFAR10(self.data_dir, train=train, download=True, transform=transform)
-        elif dataset_name == 'SHVN':
+        elif dataset_name == 'SVHN':
             return datasets.SVHN(self.data_dir, train=train, download=True, transform=transform)
         elif dataset_name == 'KMNIST':
             return datasets.KMNIST(self.data_dir, train=train, download=True, transform=transform)

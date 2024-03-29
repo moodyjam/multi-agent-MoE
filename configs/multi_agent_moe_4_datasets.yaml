@@ -1,0 +1,48 @@
+agents:
+  - id: mnist_agent1
+    data:
+      - dataset: MNIST
+        labels: [0, 1, 2, 3, 4]  
+  - id: mnist_agent2
+    data:
+      - dataset: MNIST
+        labels: [5, 6, 7, 8, 9]
+  - id: fashion_agent1
+    data:
+      - dataset: FashionMNIST
+        labels: [0, 1, 2, 3, 4]
+  - id: fashion_agent2
+    data:
+      - dataset: FashionMNIST
+        labels: [5, 6, 7, 8, 9]
+  - id: cifar1
+    data:
+      - dataset: CIFAR-10
+        labels: [0, 1, 2, 3, 4]
+  - id: cifar2
+    data:
+      - dataset: CIFAR-10
+        labels: [5, 6, 7, 8, 9]
+  - id: svhn1
+    data:
+      - dataset: SVHN
+        labels: [0, 1, 2, 3, 4]
+  - id: svhn2
+    data:
+      - dataset: SVHN
+        labels: [5, 6, 7, 8, 9]
+batch_size: 128
+num_workers: 2
+run_name: multi_agent_moe_4_datasets
+algorithm: multi_agent_moe
+max_steps: 2000
+gpus: 1
+inner_steps: 2
+accelerator: gpu
+graph_type: random
+fiedler_value: 0.7
+num_labels: 20 # This should be the total number of labels across all datasets
+lr_start: 0.005
+lr_finish: 0.0005
+rho: 0.5
+project: multi_agent_moe
