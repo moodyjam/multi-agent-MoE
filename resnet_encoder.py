@@ -95,6 +95,7 @@ class ResNetEncoder(nn.Module):
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.fc1 = nn.Linear(64, prototype_dim)
 
         self.apply(_weights_init)
 
@@ -113,19 +114,22 @@ class ResNetEncoder(nn.Module):
         out = self.layer2(out)
         out = self.layer3(out)
         out = F.avg_pool2d(out, out.size()[3])
-        encoded = out.view(out.size(0), -1)
+        encoded = self.fc1(out.view(out.size(0), -1))
+
         return encoded
     
     
-class TwoLayerNN(nn.Module):
+class MLP(nn.Module):
     def __init__(self, num_classes, prototype_dim):
-        super(TwoLayerNN, self).__init__()
-        self.fc1 = nn.Linear(prototype_dim, 64)  # First layer: 128 to 64 units
-        self.fc2 = nn.Linear(64, num_classes)  # Second layer: 64 to num_classes units
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(prototype_dim, 128)  # First layer: 128 to 64 units
+        self.fc2 = nn.Linear(128, 128)  # First layer: 128 to 64 units
+        self.fc3 = nn.Linear(128, num_classes)  # Second layer: 64 to num_classes units
 
     def forward(self, x):
         x = F.relu(self.fc1(x))  # Apply ReLU activation function after first layer
-        x = self.fc2(x)  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
+        x = F.relu(self.fc2(x))  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
+        x = F.relu(self.fc3(x))
         x = F.log_softmax(x, dim=1)
         return x
 

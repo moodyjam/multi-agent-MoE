@@ -45,3 +45,6 @@ def main():
 
         wandb.finish()  # Optional, to explicitly end the wandb run
 
+if __name__=='__main__':
+
+    main()

@@ -30,7 +30,8 @@ def get_model(config):
                     B=config["inner_steps"],
                     rho=config["rho"],
                     rho_update=config["rho_update"],
-                    prototype_dim=config["prototype_dim"])
+                    prototype_dim=config["prototype_dim"],
+                    K=config["K"])
         
     return model
 

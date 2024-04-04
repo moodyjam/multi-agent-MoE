@@ -2,11 +2,12 @@ program: sweep.py
 name: multi_agent_moe_sweep
 method: bayes  # Using Hyperband optimization
 early_terminate:
-    type: hyperband
-    max_iter: 10
-    eta: 3
+  eta: 3
+  s: 2
+  max_iter: 10
+  type: hyperband
 metric:
-  name: total_routing_acc
+  name: CIFAR-10_val_acc
   goal: maximize
 parameters:
   lr_start:
@@ -18,24 +19,26 @@ parameters:
     max: 0.001
     distribution: log_uniform_values
   inner_steps:
-    value: [2, 3, 4]
+    values: [2, 3, 4]
   rho:
     min: 0.01
     max: 1.0
-    distribution: uniform_values
   rho_update:
-    min: 0.001
-    max: 0.0001
-    distribution: uniform_values
+    min: 0.0
+    max: 0.001
   routing_weight:
     min: 0.1
     max: 10.0
-    distribution: log_uniform_values
   dinno_weight:
     min: 0.1
     max: 10.0
-    distribution: log_uniform_values
+  max_steps:
+    values: [2000, 5000, 10000]
   prototype_dim:
-    value: [128, 256, 512, 1024]
+    values: [64, 128, 256, 512, 1024]
+  use_max_diff:
+    values: [True, False]
+  K:
+    values: [1, 2]
 
 

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import numpy as np
 from models import SimpleImageEncoder
 from datamodule import DATASET_IDX_MAP
-from resnet_encoder import ResNetEncoder, BasicBlock, TwoLayerNN
+from resnet_encoder import ResNetEncoder, BasicBlock, MLP
 
 # define the LightningModule
 class MultiAgentMoE(L.LightningModule):
@@ -31,6 +31,7 @@ class MultiAgentMoE(L.LightningModule):
                  prototype_dim = 128,
                  routing_weight = 1.0,
                  dinno_weight = 1.0,
+                 K=2,
                  use_max_diff = True):
         
         super().__init__()
@@ -60,11 +61,8 @@ class MultiAgentMoE(L.LightningModule):
         self.criterion = torch.nn.NLLLoss()
         self.rho = rho
         
-        self.lr_schedule = torch.linspace(
-                lr_start,
-                lr_finish,
-                oits,
-            )
+        # self.lr_schedule = torch.cat([torch.linspace(lr_start, lr_finish, 2000), torch.ones(size=(oits-2000,))*lr_finish])
+        self.lr_schedule = torch.linspace(lr_start, lr_finish, oits)
         
         self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
         self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
@@ -81,19 +79,19 @@ class MultiAgentMoE(L.LightningModule):
 
     def calculate_loss(self, x, y, theta_reg, curr_agent, log=False):
         x_encoded = curr_agent.encoder(x)
-        x_out = curr_agent.model(x)
+        x_out = curr_agent.model(x_encoded)
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
         curr_prototype_normed = F.normalize(curr_agent.prototype, dim=-1).unsqueeze(0)
         x_encoded_normed = F.normalize(x_encoded, dim=-1)
-        neighbor_prototypes_normed = F.normalize(curr_agent.get_all_other_prototypes(), dim=-1)
+        # neighbor_prototypes_normed = F.normalize(curr_agent.get_all_other_prototypes(), dim=-1)
         sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
 
-        if self.hparams.use_max_diff:
-            diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
-        else:
-            diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
+        # if self.hparams.use_max_diff:
+        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
+        # else:
+        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
         
         theta = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
         reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
@@ -102,13 +100,13 @@ class MultiAgentMoE(L.LightningModule):
         
         if log:
             self.log(f"{curr_agent.id}_train_sim_loss", sim_loss, logger=True)
-            self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
+            # self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
             self.log(f"{curr_agent.id}_train_aux_loss", aux_loss, logger=True)
             self.log(f"{curr_agent.id}_train_dual_loss", dual_loss, logger=True)
             self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
         
         # Should that dot product be negative?
-        return aux_loss + self.hparams.routing_weight * (sim_loss + diff_loss) + self.hparams.dinno_weight * (dual_loss + reg_loss)
+        return aux_loss + self.hparams.routing_weight * sim_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -179,6 +177,8 @@ class MultiAgentMoE(L.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         x, y, datasets, agent_indices = batch
+
+        b = x.shape[0] 
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
         x_encoded = encode_agent.encoder(x)
@@ -186,30 +186,51 @@ class MultiAgentMoE(L.LightningModule):
         # Routing mechanism
         all_prototypes = torch.stack([self.agents[agent_id].get_prototype() for agent_id in self.agents])
         sims = F.normalize(all_prototypes, dim=-1) @ F.normalize(x_encoded, dim=-1).T
-        routing = sims.argmax(0)
-        preds = torch.ones_like(y) * -1
+        routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
+
+        # This gets the maximum accuracy we could achieve by perfect routing
         oracle_preds = torch.ones_like(y) * -1
 
-        # For each datapoint, use each of the specialists
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
-            curr_mask = curr_agent.idx == routing
             oracle_mask = curr_agent.idx == agent_indices
 
             if oracle_mask.sum() > 0:
+                for k_index in range(self.hparams.K):
+                    if k_index > 0:
+                        curr_mask = curr_mask | (curr_agent.idx == routing_topk.indices[k_index])
+                    else:
+                        curr_mask = curr_agent.idx == routing_topk.indices[k_index]
+
                 self.agent_routing_accs[agent_id] += (curr_mask & oracle_mask).sum()
                 self.agent_routing_counts[agent_id] += oracle_mask.sum()
 
                 # Evaluate on the oracle mask
-                logits_oracle = curr_agent.model(x[oracle_mask])
+                logits_oracle = curr_agent.model(x_encoded[oracle_mask])
                 curr_oracle_preds = torch.argmax(logits_oracle, dim=-1)
                 oracle_preds[oracle_mask] = curr_oracle_preds
 
-            if curr_mask.sum() > 0:
-                logits = curr_agent.model(x[curr_mask])
-                curr_preds = torch.argmax(logits, dim=-1)
-                preds[curr_mask] = curr_preds
-                self.log(f'{agent_id}_use', curr_mask.sum().item(), on_epoch=True, logger=True)
+        # For each datapoint, use each of the specialists
+        pred_logits = torch.zeros((b, self.hparams.num_labels)).type_as(logits_oracle)
+        agent_use = {agent_id: 0 for agent_id in self.agents}
+        for k_index in range(self.hparams.K):
+            for agent_id in self.agents:
+                curr_agent = self.agents[agent_id]
+                curr_mask = curr_agent.idx == routing_topk.indices[k_index]
+
+                if curr_mask.sum() > 0:
+                    logits = curr_agent.model(x_encoded[curr_mask])
+                    pred_logits[curr_mask] += routing_topk.values[k_index][curr_mask].unsqueeze(1) * logits
+
+                agent_use[agent_id] += curr_mask.sum().item()
+
+        preds = torch.argmax(pred_logits, dim=-1)
+
+        assert pred_logits.sum()
+        assert not torch.any(pred_logits.sum(-1) == 0), "Some prediction logits not assigned. This is unexpected."
+
+        for agent_id in self.agents:
+            self.log(f'{agent_id}_use', agent_use[agent_id], on_epoch=True, logger=True)
 
         for dataset_idx, dataset in enumerate(self.dataset_names):
             mask = (datasets == dataset_idx)

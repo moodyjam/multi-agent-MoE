@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 from torch import optim
 from resnet import ResNet, BasicBlock
+from resnet_encoder import MLP
 import numpy as np
 
 class Agent(nn.Module):
@@ -23,7 +24,7 @@ class Agent(nn.Module):
 class MixtureOfExpertsAgent(nn.Module):
    def __init__(self, num_agents, encoder, idx, id, num_labels, prototypes):
       super(MixtureOfExpertsAgent, self).__init__()
-      self.model = ResNet(BasicBlock, [3, 3, 3], num_labels)
+      self.model = MLP(num_labels, prototype_dim = prototypes.shape[-1]) # ResNet(BasicBlock, [3, 3, 3], num_labels)
       self.encoder = encoder
       self.idx = idx
       self.prototype = nn.Parameter(prototypes[idx])
