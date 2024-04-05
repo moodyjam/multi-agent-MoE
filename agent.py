@@ -27,41 +27,15 @@ class MixtureOfExpertsAgent(nn.Module):
       self.model = MLP(num_labels, prototype_dim = prototypes.shape[-1]) # ResNet(BasicBlock, [3, 3, 3], num_labels)
       self.encoder = encoder
       self.idx = idx
-      self.prototype = nn.Parameter(prototypes[idx])
-      self.encoder_flattened = torch.nn.utils.parameters_to_vector(self.encoder.parameters()).clone().detach()
-      self.register_buffer("dual", torch.zeros_like(self.encoder_flattened))
-      self.register_buffer("all_prototypes", prototypes.clone().detach())
-      self.register_buffer("excluded_indices", torch.tensor([i for i in range(num_agents) if i != self.idx]))
-      self.update_timestamps = {agent_idx: 0 for agent_idx in range(num_agents)}
+      self.prototypes = nn.Parameter(prototypes)
+      flattened_params = self.get_flattened_params()
+      self.register_buffer("dual", torch.zeros_like(flattened_params))
       self.id = id
-      
-   def set_flattened_params(self):
-      self.encoder_flattened = torch.nn.utils.parameters_to_vector(self.encoder.parameters()).clone().detach()
    
    def get_flattened_params(self):
-      return self.encoder_flattened
+      return torch.cat([torch.nn.utils.parameters_to_vector(self.encoder.parameters()),
+                        torch.nn.utils.parameters_to_vector(self.prototypes)])
    
-   def update_other_prototypes(self, other_prototypes, other_update_timestamps):
-      for agent_idx, prototype in enumerate(other_prototypes):
-         if other_update_timestamps[agent_idx] > self.update_timestamps[agent_idx]:
-            # Update the prototype with the 
-            self.all_prototypes[agent_idx] = prototype
-            # Update the timestamp with the later timestamp
-            self.update_timestamps[agent_idx] = other_update_timestamps[agent_idx]
-
-   def update_own_prototype(self, step):
-      self.all_prototypes[self.idx] = self.prototype.clone().detach()
-      self.update_timestamps[self.idx] = step
-   
-   def get_all_prototypes(self):
-      return self.all_prototypes, self.update_timestamps
-   
-   def get_all_other_prototypes(self):
-      return self.all_prototypes[self.excluded_indices]
-   
-   def get_prototype(self):
-      own_prototype = self.prototype.clone().detach()
-      return own_prototype
 
    
         

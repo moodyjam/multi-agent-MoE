@@ -59,6 +59,7 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
+        self.routing_criterion = torch.nn.CrossEntropyLoss()
         self.rho = rho
         
         # self.lr_schedule = torch.cat([torch.linspace(lr_start, lr_finish, 2000), torch.ones(size=(oits-2000,))*lr_finish])
@@ -83,39 +84,27 @@ class MultiAgentMoE(L.LightningModule):
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
-        curr_prototype_normed = F.normalize(curr_agent.prototype, dim=-1).unsqueeze(0)
-        x_encoded_normed = F.normalize(x_encoded, dim=-1)
-        # neighbor_prototypes_normed = F.normalize(curr_agent.get_all_other_prototypes(), dim=-1)
-        sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
-
-        # if self.hparams.use_max_diff:
-        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
-        # else:
-        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
+        routing_logits = (curr_agent.prototypes @ x_encoded.T.clone().detach()).T
+        routing_labels = torch.ones_like(y) * curr_agent.idx
+        routing_loss = self.routing_criterion(routing_logits, routing_labels)
         
-        theta = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
+        theta = curr_agent.get_flattened_params()
         reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
         dual_loss = torch.dot(curr_agent.dual, theta)
         reg_loss = self.rho * reg
         
         if log:
-            self.log(f"{curr_agent.id}_train_sim_loss", sim_loss, logger=True)
-            # self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_routing_loss", routing_loss, logger=True)
             self.log(f"{curr_agent.id}_train_aux_loss", aux_loss, logger=True)
             self.log(f"{curr_agent.id}_train_dual_loss", dual_loss, logger=True)
             self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
         
         # Should that dot product be negative?
-        return aux_loss + self.hparams.routing_weight * sim_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
+        return aux_loss + self.hparams.routing_weight * routing_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
         # it is independent of forward
-
-        for agent_id in self.agents:
-            curr_agent = self.agents[agent_id]
-            curr_agent.set_flattened_params()
-            curr_agent.update_own_prototype(self.manual_global_step)
         self.rho *= (1 + self.hparams.rho_update) 
         
         # Set the optimizers for each agent
@@ -125,19 +114,12 @@ class MultiAgentMoE(L.LightningModule):
 
         # Technically this can be done in parallel
         all_losses = []
-        all_indices = np.arange(len(self.agents))
         for agent_idx, agent_id in enumerate(self.agents):
             curr_agent = self.agents[agent_id]     
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
-            neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
+            neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params().clone().detach() for idx in neighbor_indices])
 
-            # Now align the prototypes from the neighbors
-            for neighbor_idx in neighbor_indices:
-                neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
-                neighbor_prototypes, neighbor_timestamps = neighbor_agent.get_all_prototypes()
-                curr_agent.update_other_prototypes(neighbor_prototypes, neighbor_timestamps)
-
-            theta = curr_agent.get_flattened_params()
+            theta = curr_agent.get_flattened_params().clone().detach()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
             theta_reg = (theta + neighbor_params) / 2
             curr_batch = batch[curr_agent.idx]
@@ -152,17 +134,12 @@ class MultiAgentMoE(L.LightningModule):
                 x_split = x[tau*split_size:(tau+1)*split_size]
                 y_split = y[tau*split_size:(tau+1)*split_size]
                 
-                if tau == 0:
-                    log = True
-                else:
-                    log = False
-                
                 curr_agent.opt.zero_grad()
                 loss = self.calculate_loss(x_split,
                                            y_split,
                                            theta_reg,
                                            curr_agent = curr_agent,
-                                           log = log)
+                                           log = False)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
@@ -184,8 +161,7 @@ class MultiAgentMoE(L.LightningModule):
         x_encoded = encode_agent.encoder(x)
         
         # Routing mechanism
-        all_prototypes = torch.stack([self.agents[agent_id].get_prototype() for agent_id in self.agents])
-        sims = F.normalize(all_prototypes, dim=-1) @ F.normalize(x_encoded, dim=-1).T
+        sims = F.softmax(encode_agent.prototypes @ x_encoded.T, dim=0)
         routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
 
         # This gets the maximum accuracy we could achieve by perfect routing
