@@ -33,8 +33,9 @@ class MixtureOfExpertsAgent(nn.Module):
       self.id = id
    
    def get_flattened_params(self):
-      return torch.cat([torch.nn.utils.parameters_to_vector(self.encoder.parameters()),
-                        torch.nn.utils.parameters_to_vector(self.prototypes)])
+      return torch.nn.utils.parameters_to_vector(self.encoder.parameters())
+      # return torch.cat([torch.nn.utils.parameters_to_vector(self.encoder.parameters()),
+                        # torch.nn.utils.parameters_to_vector(self.prototypes)])
    
 
    
