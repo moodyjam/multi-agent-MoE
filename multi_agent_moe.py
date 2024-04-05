@@ -93,20 +93,22 @@ class MultiAgentMoE(L.LightningModule):
         # else:
         #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
         
-        theta = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
+        encoder_flattened = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
+        prototypes_flattened = torch.nn.utils.parameters_to_vector(curr_agent.prototypes)
+        theta = torch.cat([encoder_flattened, prototypes_flattened])
         reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
         dual_loss = torch.dot(curr_agent.dual, theta)
         reg_loss = self.rho * reg
         
         if log:
-            self.log(f"{curr_agent.id}_train_sim_loss", sim_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_routing_loss", sim_loss, logger=True)
             # self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
             self.log(f"{curr_agent.id}_train_aux_loss", aux_loss, logger=True)
             self.log(f"{curr_agent.id}_train_dual_loss", dual_loss, logger=True)
             self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
         
         # Should that dot product be negative?
-        return aux_loss + self.hparams.routing_weight * sim_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
+        return aux_loss + self.hparams.routing_weight * routing_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -115,7 +117,6 @@ class MultiAgentMoE(L.LightningModule):
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
             curr_agent.set_flattened_params()
-            curr_agent.update_own_prototype(self.manual_global_step)
         self.rho *= (1 + self.hparams.rho_update) 
         
         # Set the optimizers for each agent
@@ -131,11 +132,6 @@ class MultiAgentMoE(L.LightningModule):
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
 
-            # Now align the prototypes from the neighbors
-            for neighbor_idx in neighbor_indices:
-                neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
-                neighbor_prototypes, neighbor_timestamps = neighbor_agent.get_all_prototypes()
-                curr_agent.update_other_prototypes(neighbor_prototypes, neighbor_timestamps)
 
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
@@ -152,17 +148,12 @@ class MultiAgentMoE(L.LightningModule):
                 x_split = x[tau*split_size:(tau+1)*split_size]
                 y_split = y[tau*split_size:(tau+1)*split_size]
                 
-                if tau == 0:
-                    log = True
-                else:
-                    log = False
-                
                 curr_agent.opt.zero_grad()
                 loss = self.calculate_loss(x_split,
                                            y_split,
                                            theta_reg,
                                            curr_agent = curr_agent,
-                                           log = log)
+                                           log = False)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
@@ -184,8 +175,7 @@ class MultiAgentMoE(L.LightningModule):
         x_encoded = encode_agent.encoder(x)
         
         # Routing mechanism
-        all_prototypes = torch.stack([self.agents[agent_id].get_prototype() for agent_id in self.agents])
-        sims = F.normalize(all_prototypes, dim=-1) @ F.normalize(x_encoded, dim=-1).T
+        sims = F.softmax(encode_agent.prototypes @ x_encoded.T, dim=0)
         routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
 
         # This gets the maximum accuracy we could achieve by perfect routing
