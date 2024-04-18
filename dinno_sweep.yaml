@@ -4,7 +4,7 @@ method: bayes  # Using Hyperband optimization
 early_terminate:
   eta: 3
   s: 2
-  max_iter: 30
+  max_iter: 10
   type: hyperband
 metric:
   name: CIFAR-10_val_acc
