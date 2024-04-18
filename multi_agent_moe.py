@@ -11,7 +11,6 @@ import torch.nn.functional as F
 import numpy as np
 from models import SimpleImageEncoder
 from datamodule import DATASET_IDX_MAP
-from resnet_encoder import ResNetEncoder, BasicBlock, MLP
 
 # define the LightningModule
 class MultiAgentMoE(L.LightningModule):
@@ -59,10 +58,13 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
+        self.routing_criterion = torch.nn.CrossEntropyLoss()
         self.rho = rho
         
-        # self.lr_schedule = torch.cat([torch.linspace(lr_start, lr_finish, 2000), torch.ones(size=(oits-2000,))*lr_finish])
-        self.lr_schedule = torch.linspace(lr_start, lr_finish, oits)
+        if oits > 10000:
+            self.lr_schedule = torch.cat([torch.linspace(lr_start, lr_finish, 10000), torch.ones(size=(oits-10000,))*lr_finish])
+        else:
+            self.lr_schedule = torch.linspace(lr_start, lr_finish, oits)
         
         self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
         self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
@@ -83,16 +85,10 @@ class MultiAgentMoE(L.LightningModule):
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
-        curr_prototype_normed = F.normalize(curr_agent.prototype, dim=-1).unsqueeze(0)
-        x_encoded_normed = F.normalize(x_encoded, dim=-1)
-        # neighbor_prototypes_normed = F.normalize(curr_agent.get_all_other_prototypes(), dim=-1)
-        sim_loss = -(curr_prototype_normed * x_encoded_normed).sum(1).mean()
+        routing_logits = (curr_agent.prototypes @ x_encoded.T.clone().detach()).T
+        routing_labels = torch.ones_like(y) * curr_agent.idx
+        routing_loss = self.routing_criterion(routing_logits, routing_labels)
 
-        # if self.hparams.use_max_diff:
-        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean(-1).max()
-        # else:
-        #     diff_loss = (neighbor_prototypes_normed.unsqueeze(1) * x_encoded_normed.unsqueeze(0)).sum(-1).mean()
-        
         encoder_flattened = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
         prototypes_flattened = torch.nn.utils.parameters_to_vector(curr_agent.prototypes)
         theta = torch.cat([encoder_flattened, prototypes_flattened])
@@ -101,7 +97,7 @@ class MultiAgentMoE(L.LightningModule):
         reg_loss = self.rho * reg
         
         if log:
-            self.log(f"{curr_agent.id}_train_routing_loss", sim_loss, logger=True)
+            self.log(f"{curr_agent.id}_train_routing_loss", routing_loss, logger=True)
             # self.log(f"{curr_agent.id}_train_diff_loss", diff_loss, logger=True)
             self.log(f"{curr_agent.id}_train_aux_loss", aux_loss, logger=True)
             self.log(f"{curr_agent.id}_train_dual_loss", dual_loss, logger=True)

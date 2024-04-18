@@ -20,5 +20,13 @@
             "console": "integratedTerminal",
             "args": ["--config=configs/multi_agent_moe_4_datasets.yaml"]
         }
+        {
+            "name": "train dinno",
+            "type": "python",
+            "request": "launch",
+            "program": "run.py",
+            "console": "integratedTerminal",
+            "args": ["--config=configs/dinno_4_datasets.yaml"]
+        }
     ]
 }

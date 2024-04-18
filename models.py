@@ -23,6 +23,46 @@ class SimpleImageEncoder(nn.Module):
         x = self.fc(x)
         return x
     
+class MLP(nn.Module):
+    def __init__(self, num_classes, prototype_dim):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(prototype_dim, 128)  # First layer: 128 to 64 units
+        self.fc2 = nn.Linear(128, 128)  # First layer: 128 to 64 units
+        self.fc3 = nn.Linear(128, num_classes)  # Second layer: 64 to num_classes units
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))  # Apply ReLU activation function after first layer
+        x = F.relu(self.fc2(x))  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
+        x = F.relu(self.fc3(x))
+        x = F.log_softmax(x, dim=1)
+        return x
+    
+class SimpleImageClassifier(nn.Module):
+    def __init__(self, prototype_dim=512, num_classes=50):
+        super(SimpleImageClassifier, self).__init__()
+
+        # Reduce the number of filters in each layer to decrease the model size
+        self.conv1 = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)   # Output: 8x32x32
+        self.conv2 = nn.Conv2d(8, 16, kernel_size=3, stride=2, padding=1)  # Output: 16x16x16
+        self.conv3 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1) # Output: 32x8x8
+
+        # Flatten and pass through a linear layer to get the desired output dimension
+        self.fc = nn.Linear(32 * 8 * 8, prototype_dim)
+        self.fc1 = nn.Linear(prototype_dim, 128)  # First layer: 128 to 64 units
+        self.fc2 = nn.Linear(128, 128)  # First layer: 128 to 64 units
+        self.fc3 = nn.Linear(128, num_classes)  # Second layer: 64 to num_classes units
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)  # Flatten the features into a vector
+        x = self.fc(x)
+        x = F.relu(self.fc1(x))  # Apply ReLU activation function after first layer
+        x = F.relu(self.fc2(x))  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
+        x = F.relu(self.fc3(x))
+        x = F.log_softmax(x, dim=1)
+        return x    
     
 # From the code
 class MNISTConvNet(nn.Module):

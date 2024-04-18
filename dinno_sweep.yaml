@@ -1,10 +1,10 @@
-program: sweep.py
-name: multi_agent_moe_sweep
+program: dinno_sweep.py
+name: dinno_sweep
 method: bayes  # Using Hyperband optimization
 early_terminate:
   eta: 3
   s: 2
-  max_iter: 10
+  min_iter: 10
   type: hyperband
 metric:
   name: CIFAR-10_val_acc
@@ -27,13 +27,11 @@ parameters:
     min: 0.1
     max: 10.0
   dinno_weight:
-    min: 1.0
-    max: 20.0
+    min: 0.1
+    max: 10.0
   max_steps:
     values: [5000, 10000]
   prototype_dim:
     values: [256, 512, 1024]
-  K:
-    values: [1, 2]
 
 

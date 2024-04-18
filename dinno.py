@@ -9,6 +9,8 @@ import torch
 from agent import Agent
 import torch.nn.functional as F
 import numpy as np
+from models import SimpleImageClassifier
+from datamodule import DATASET_IDX_MAP
 
 # From the code
 class MNISTConvNet(nn.Module):
@@ -49,26 +51,33 @@ class DiNNO(L.LightningModule):
                  lr_start=0.005,
                  lr_finish=0.0005,
                  oits=2000,
-                 rho_update=0.0003):
+                 rho_update=0.0003,
+                 dinno_weight=1.0,
+                 prototype_dim=1024):
         super().__init__()
         self.num_nodes = len(agent_config)
         self.G, self.G_connectivity = create_graph(num_nodes = self.num_nodes,
                                                    graph_type = graph_type,
                                                    target_connectivity = fiedler_value)
         
-        base_model = MNISTConvNet()
+        base_model = SimpleImageClassifier(prototype_dim=prototype_dim, num_classes=num_classes)
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
         # Initialize the networks for each agent
         self.agent_config = agent_config
         self.agents = nn.ModuleDict({agent["id"]: Agent(config=agent_config[i],
                                           model=deepcopy(base_model),
-                                          idx=i)
+                                          idx=i,
+                                          num_labels=num_classes)
                                           for i, agent in enumerate(self.agent_config)})
+        self.dataset_names = list(DATASET_IDX_MAP.keys())
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
         self.rho = rho
+
+        self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
         
         self.lr_schedule = torch.linspace(
                 lr_start,
@@ -84,7 +93,7 @@ class DiNNO(L.LightningModule):
         primal_loss = self.criterion(curr_agent.model(x), y)
         theta = torch.nn.utils.parameters_to_vector(curr_agent.model.parameters())
         reg = torch.sum(torch.square(torch.cdist(theta.reshape(1, -1), theta_reg)))
-        return primal_loss + torch.dot(curr_agent.dual, theta) + self.rho * reg
+        return primal_loss + self.hparams.dinno_weight*(torch.dot(curr_agent.dual, theta) + self.rho * reg)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -105,7 +114,7 @@ class DiNNO(L.LightningModule):
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
             theta_reg = (theta + neighbor_params) / 2
             curr_batch = batch[curr_agent.idx]
-            x, y = curr_batch
+            x, y, dataset_names, agent_indices = curr_batch
             split_size = x.shape[0] // self.hparams.B
             
             # Optimize for current agent
@@ -127,11 +136,13 @@ class DiNNO(L.LightningModule):
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
         
         self.manual_global_step += 1
+        if self.manual_global_step >= self.trainer.max_steps:
+            self.trainer.should_stop = True  # This will gracefully end the training
 
         return loss
     
     def validation_step(self, batch, batch_idx):
-        x, y = batch
+        x, y, datasets, agent_indices = batch
         all_accs = []
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
@@ -140,7 +151,29 @@ class DiNNO(L.LightningModule):
             acc = torch.sum(y == preds).float() / len(y)
             self.log(f'{agent_id}_val_acc', acc.item(), on_epoch=True, logger=True)
             all_accs.append(acc.item())
+
+            # For each agent, include the amount they got right
+            for dataset_idx, dataset in enumerate(self.dataset_names):
+                mask = (datasets == dataset_idx)
+                if mask.sum() > 0:
+                    self.val_accs[self.dataset_names[dataset_idx]] += torch.sum(y[mask] == preds[mask]).float()
+                    self.val_acc_counts[self.dataset_names[dataset_idx]] += len(y[mask])
+
         self.log(f'val_acc', np.mean(all_accs), on_epoch=True, prog_bar=True, logger=True)
+
+    def on_validation_epoch_end(self):
+        # Compute average loss over the epoch
+
+        for dataset_idx, dataset_name in enumerate(self.dataset_names):
+            if self.val_acc_counts[dataset_name] > 0:
+                dataset_acc = self.val_accs[dataset_name] / self.val_acc_counts[dataset_name]
+
+                # Log the accuracy
+                self.log(f'{dataset_name}_val_acc', dataset_acc, logger=True, prog_bar=True)
+
+        # Reset for the next epoch
+        self.val_accs = {dataset_name: 0.0 for dataset_name in self.dataset_names}
+        self.val_acc_counts = {dataset_name: 0 for dataset_name in self.dataset_names}
 
 
     def configure_optimizers(self):

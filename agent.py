@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 from torch import optim
 from resnet import ResNet, BasicBlock
-from resnet_encoder import MLP
+from models import MLP
 import numpy as np
 
 class Agent(nn.Module):

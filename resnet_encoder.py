@@ -117,21 +117,6 @@ class ResNetEncoder(nn.Module):
         encoded = self.fc1(out.view(out.size(0), -1))
 
         return encoded
-    
-    
-class MLP(nn.Module):
-    def __init__(self, num_classes, prototype_dim):
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(prototype_dim, 128)  # First layer: 128 to 64 units
-        self.fc2 = nn.Linear(128, 128)  # First layer: 128 to 64 units
-        self.fc3 = nn.Linear(128, num_classes)  # Second layer: 64 to num_classes units
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))  # Apply ReLU activation function after first layer
-        x = F.relu(self.fc2(x))  # Output layer, no activation here to allow for flexibility (e.g., softmax for classification)
-        x = F.relu(self.fc3(x))
-        x = F.log_softmax(x, dim=1)
-        return x
 
 
 def resnet20():

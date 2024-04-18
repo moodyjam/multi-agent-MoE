@@ -45,9 +45,17 @@ def get_custom_collate_fn(dataset_name):
     return custom_collate_fn
 
 class DatasetWrapper(Dataset):
-    def __init__(self, dataset, dataset_name):
+    def __init__(self, dataset, dataset_name, dataset_idx_map=None, dataset_agent_map=None):
         self.dataset = dataset
         self.dataset_name = dataset_name
+
+        if dataset_idx_map is None:
+            dataset_idx_map = DATASET_IDX_MAP
+        if dataset_agent_map is None:
+            dataset_agent_map = DATASET_AGENT_MAP
+            
+        self.dataset_idx_map = dataset_idx_map
+        self.dataset_agent_map = dataset_agent_map
         self.labels_map = {'MNIST': 0, 'FashionMNIST': 10, 'CIFAR-10': 20, 'SVHN': 30, 'KMNIST': 40}
         
     def __len__(self):
@@ -55,10 +63,10 @@ class DatasetWrapper(Dataset):
 
     def __getitem__(self, idx):
         data, label = self.dataset[idx]
-        agent_idx = DATASET_AGENT_MAP[(self.dataset_name, label < 5)]
+        agent_idx = self.dataset_agent_map[(self.dataset_name, label < 5)]
         label = label + self.labels_map[self.dataset_name]
         
-        return data, label, DATASET_IDX_MAP[self.dataset_name], agent_idx
+        return data, label, self.dataset_idx_map[self.dataset_name], agent_idx
 
 
 class ModularDataModule(LightningDataModule):
@@ -71,11 +79,15 @@ class ModularDataModule(LightningDataModule):
                  cache_dir: str = "./cache",
                  validation_split: float = 0.1,
                  custom_transforms: dict = None,
-                 num_workers: int = 10):
+                 num_workers: int = 10,
+                 dataset_agent_map: dict = None,
+                 dataset_idx_map: dict = None):
         
         super().__init__()
         self.data_dir = data_dir
         self.agent_config = agent_config
+        self.dataset_agent_map = dataset_agent_map
+        self.dataset_idx_map = dataset_idx_map
 
         self.dataset_names = []
         for i, agent in enumerate(agent_config):
@@ -100,6 +112,10 @@ class ModularDataModule(LightningDataModule):
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ]),
             'CIFAR-10': transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ]),
+            'CIFAR-100': transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ]),
@@ -138,6 +154,8 @@ class ModularDataModule(LightningDataModule):
             return datasets.SVHN(self.data_dir, split= 'train' if train else 'test', download=True, transform=transform)
         elif dataset_name == 'KMNIST':
             return datasets.KMNIST(self.data_dir, train=train, download=True, transform=transform)
+        elif dataset_name == 'CIFAR-100':
+            return datasets.CIFAR100(self.data_dir, train=train, download=True, transform=transform)
         # Add Datasets Here
         else:
             raise ValueError(f"Unsupported dataset: {dataset_name}")
@@ -207,9 +225,21 @@ class ModularDataModule(LightningDataModule):
                 train_dataset = train_datasets[dataset_name]
                 test_dataset = train_datasets[dataset_name]
                 for label in agent['data'][i]['labels']:
-                    agent_train_dataset.append(DatasetWrapper(Subset(train_dataset, self.cache[dataset_name]["train"][label]), dataset_name))
-                    agent_val_dataset.append(DatasetWrapper(Subset(train_dataset, self.cache[dataset_name]["val"][label]), dataset_name))
-                    agent_test_dataset.append(DatasetWrapper(Subset(test_dataset, self.cache[dataset_name]["test"][label]), dataset_name))
+                    agent_train_dataset.append(DatasetWrapper(Subset(train_dataset,
+                                                                     self.cache[dataset_name]["train"][label]),
+                                                                     dataset_name,
+                                                                     dataset_idx_map=self.dataset_idx_map,
+                                                                     dataset_agent_map=self.dataset_agent_map))
+                    agent_val_dataset.append(DatasetWrapper(Subset(train_dataset,
+                                                                   self.cache[dataset_name]["val"][label]),
+                                                                   dataset_name,
+                                                                   dataset_idx_map=self.dataset_idx_map,
+                                                                   dataset_agent_map=self.dataset_agent_map))
+                    agent_test_dataset.append(DatasetWrapper(Subset(test_dataset,
+                                                                    self.cache[dataset_name]["test"][label]),
+                                                                    dataset_name,
+                                                                    dataset_idx_map=self.dataset_idx_map,
+                                                                    dataset_agent_map=self.dataset_agent_map))
 
             self.agent_datasets[agent_id]["train"] = ConcatDataset(agent_train_dataset)
             self.agent_datasets[agent_id]["val"] = ConcatDataset(agent_val_dataset)

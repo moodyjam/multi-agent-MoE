@@ -18,7 +18,14 @@ def get_model(config):
         model = DiNNO(agent_config=config["agents"],
                     graph_type=config["graph_type"],
                     fiedler_value=config["fiedler_value"],
-                    oits=config["max_steps"])
+                    oits=config["max_steps"],
+                    num_classes=config["num_labels"],
+                    lr_start=config["lr_start"],
+                    lr_finish=config["lr_finish"],
+                    B=config["inner_steps"],
+                    rho=config["rho"],
+                    dinno_weight=config["dinno_weight"],
+                    rho_update=config["rho_update"])
     else:
         model = MultiAgentMoE(agent_config=config["agents"],
                     graph_type=config["graph_type"],
@@ -30,6 +37,8 @@ def get_model(config):
                     B=config["inner_steps"],
                     rho=config["rho"],
                     rho_update=config["rho_update"],
+                    dinno_weight=config["dinno_weight"],
+                    routing_weight=config["routing_weight"],
                     prototype_dim=config["prototype_dim"],
                     K=config["K"])
         
