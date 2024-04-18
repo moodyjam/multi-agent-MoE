@@ -205,8 +205,11 @@ class ModularDataModule(LightningDataModule):
                     # Shuffle indices
                     np.random.shuffle(train_indices_dict[label])
                     split = int(np.floor(self.validation_split * len(train_indices_dict[label])))
-                    train_indices_dict[label] = train_indices_dict[label][split:]
-                    val_indices_dict[label] = train_indices_dict[label][:split]
+                    label_val_indices = train_indices_dict[label][:split]
+                    label_train_indices = train_indices_dict[label][split:]
+                    val_indices_dict[label] = label_val_indices
+                    train_indices_dict[label] = label_train_indices
+
 
                 self.cache[config_key] = {"train": train_indices_dict, "val": val_indices_dict, "test": test_indices_dict}
 
