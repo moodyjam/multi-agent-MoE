@@ -11,6 +11,8 @@ import torch.nn.functional as F
 import numpy as np
 from models import SimpleImageClassifier
 from datamodule import DATASET_IDX_MAP
+from models import SimpleImageEncoder
+from models import MLP
 
 # From the code
 class MNISTConvNet(nn.Module):

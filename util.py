@@ -1,6 +1,12 @@
 import networkx as nx
 import random
 
+# ChatGPT
+def count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
+
 
 def create_graph(num_nodes, graph_type, target_connectivity=1.0, max_iterations=1000):
 

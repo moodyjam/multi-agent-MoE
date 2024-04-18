@@ -48,7 +48,7 @@ rho: 0.62
 rho_update: 0.0000
 prototype_dim: 1024
 use_max_diff: True
-routing_weight: 10
-dinno_weight: 20
+routing_weight: 1
+dinno_weight: 1
 project: multi_agent_moe
 K: 2

@@ -9,7 +9,8 @@ class Agent(nn.Module):
    def __init__(self, config, model, idx, num_labels):
       super(Agent, self).__init__()
       self.config = config
-      self.model = ResNet(BasicBlock, [3, 3, 3], num_classes=num_labels)
+      # self.model = ResNet(BasicBlock, [3, 3, 3], num_classes=num_labels)
+      self.model = model
       self.idx = idx
       self.set_flattened_params()
       self.register_buffer("dual", torch.zeros_like(self.flattened_params))
@@ -28,8 +29,7 @@ class MixtureOfExpertsAgent(nn.Module):
       self.encoder = encoder
       self.idx = idx
       self.prototypes = nn.Parameter(prototypes)
-      self.encoder_flattened = torch.nn.utils.parameters_to_vector(self.encoder.parameters()).clone().detach()
-      self.prototypes_flattened = torch.nn.utils.parameters_to_vector(self.prototypes).clone().detach()
+      self.set_flattened_params()
       self.register_buffer("dual", torch.zeros_like(torch.cat([self.encoder_flattened, self.prototypes_flattened])))
       self.id = id
       

@@ -23,9 +23,6 @@ parameters:
     max: 1.0
   rho_update:
     values: [0, .0003, .0001]
-  routing_weight:
-    min: 0.1
-    max: 10.0
   dinno_weight:
     min: 0.1
     max: 10.0
