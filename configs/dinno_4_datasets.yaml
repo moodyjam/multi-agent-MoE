@@ -37,15 +37,15 @@ run_name: dinno_4_datasets
 algorithm: dinno
 max_steps: 10000
 gpus: 1
-inner_steps: 4
+inner_steps: 2
 accelerator: gpu
 graph_type: random
 fiedler_value: 0.7
 num_labels: 50 # This should be the total number of labels across all datasets
-lr_start: 0.00617
-lr_finish: 0.000875
-rho: 0.1605
-rho_update: 0.0003
+lr_start: 0.0008
+lr_finish: 0.00005
+rho: 0.62
+rho_update: 0.0000
 prototype_dim: 1024
-dinno_weight: 0.733
+dinno_weight: 1
 project: multi_agent_moe

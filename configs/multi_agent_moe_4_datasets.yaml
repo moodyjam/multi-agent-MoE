@@ -35,7 +35,7 @@ batch_size: 128
 num_workers: 2
 run_name: best_results_4_datasets
 algorithm: multi_agent_moe
-max_steps: 100000
+max_steps: 10000
 gpus: 1
 inner_steps: 2
 accelerator: gpu
