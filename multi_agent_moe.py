@@ -30,6 +30,7 @@ class MultiAgentMoE(L.LightningModule):
                  prototype_dim = 128,
                  routing_weight = 1.0,
                  dinno_weight = 1.0,
+                 data_routing_thresh = 0.5,
                  K=2,
                  use_max_diff = True):
         
@@ -58,7 +59,7 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
-        self.routing_criterion = torch.nn.CrossEntropyLoss()
+        self.routing_criterion = torch.nn.MSELoss()
         self.rho = rho
         
         if oits > 10000:
@@ -85,9 +86,15 @@ class MultiAgentMoE(L.LightningModule):
         aux_loss = self.criterion(x_out, y)
         
         # Here learn prototype vectors
-        routing_logits = (curr_agent.prototypes @ x_encoded.T.clone().detach()).T
-        routing_labels = torch.ones_like(y) * curr_agent.idx
-        routing_loss = self.routing_criterion(routing_logits, routing_labels)
+        routing_logits = (F.normalize(curr_agent.prototypes, dim=-1) @ F.normalize(x_encoded.clone().detach(),dim=-1).T).T
+        routing_loss = self.routing_criterion(routing_logits[:, curr_agent.idx], torch.ones_like(y).float())
+
+        # FIXME Change routing back to the way it previously was
+        data_routing_map = routing_logits > self.hparams.data_routing_thresh
+        data_routing_map[:, curr_agent.idx] = False
+
+        # Store the data that we are going to route to the other agents
+        curr_agent.update_data_routing(data_routing_map, x_encoded.clone().detach(), y)
 
         encoder_flattened = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
         prototypes_flattened = torch.nn.utils.parameters_to_vector(curr_agent.prototypes)
@@ -128,6 +135,9 @@ class MultiAgentMoE(L.LightningModule):
             neighbor_indices = list(self.G.neighbors(curr_agent.idx))
             neighbor_params = torch.stack([self.agents[self.agent_config[idx]['id']].get_flattened_params() for idx in neighbor_indices])
 
+            for neighbor_idx in neighbor_indices:
+                neighbor_agent = self.agents[self.agent_config[neighbor_idx]['id']]
+                curr_agent.update_data_routing_dict(neighbor_agent.get_data_routing())
 
             theta = curr_agent.get_flattened_params()
             curr_agent.dual += self.rho * (theta - neighbor_params).sum(0)
@@ -153,6 +163,26 @@ class MultiAgentMoE(L.LightningModule):
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
+            # Now train on the data routed to us
+            curr_agent.store_data_routing(self.manual_global_step)
+            routed_data = []
+            routed_labels = []
+            for other_idx in curr_agent.data_routing_dict:
+                if other_idx == curr_agent.idx:
+                    continue # Don't retrain on our own data
+                mask = curr_agent.data_routing_dict[other_idx]["data_routing_map"][:,curr_agent.idx]
+                masked_data = curr_agent.data_routing_dict[other_idx]["encoded_data"][mask]
+                masked_labels = curr_agent.data_routing_dict[other_idx]["encoded_data_labels"][mask]
+                if masked_data.shape[0] > 0:
+                    routed_data.append(masked_data)
+                    routed_labels.append(masked_labels)
+            
+            if len(routed_data) > 0:
+                print()
+                
+
+            # Data routing.
+
             all_losses.append(loss.item())
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
         
@@ -165,13 +195,15 @@ class MultiAgentMoE(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y, datasets, agent_indices = batch
 
+        # FIXME Change this back to the way it previously was
+
         b = x.shape[0] 
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
         x_encoded = encode_agent.encoder(x)
         
         # Routing mechanism
-        sims = F.softmax(encode_agent.prototypes @ x_encoded.T, dim=0)
+        sims = F.normalize(encode_agent.prototypes,dim=-1) @ F.normalize(x_encoded,dim=-1).T
         routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
 
         # This gets the maximum accuracy we could achieve by perfect routing
