@@ -195,15 +195,13 @@ class MultiAgentMoE(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y, datasets, agent_indices = batch
 
-        # FIXME Change this back to the way it previously was
-
         b = x.shape[0] 
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
         x_encoded = encode_agent.encoder(x)
         
         # Routing mechanism
-        sims = F.normalize(encode_agent.prototypes,dim=-1) @ F.normalize(x_encoded,dim=-1).T
+        sims = F.softmax(encode_agent.prototypes @ x_encoded.T, dim=0)
         routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
 
         # This gets the maximum accuracy we could achieve by perfect routing
