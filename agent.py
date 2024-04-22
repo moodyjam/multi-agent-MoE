@@ -36,6 +36,7 @@ class MixtureOfExpertsAgent(nn.Module):
       self.encoded_data = []
       self.encoded_data_labels = []
       self.data_routing_dict = dict()
+      self.fc = nn.Linear(prototypes.shape[-1], num_labels)
       
    def set_flattened_params(self):
       self.encoder_flattened = torch.nn.utils.parameters_to_vector(self.encoder.parameters()).clone().detach()

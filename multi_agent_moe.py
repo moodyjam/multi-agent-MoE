@@ -30,7 +30,7 @@ class MultiAgentMoE(L.LightningModule):
                  prototype_dim = 128,
                  routing_weight = 1.0,
                  dinno_weight = 1.0,
-                 data_routing_thresh = 0.5,
+                 data_routing_thresh = 0.25,
                  K=2,
                  use_max_diff = True):
         
@@ -59,7 +59,7 @@ class MultiAgentMoE(L.LightningModule):
         
         self.automatic_optimization = False
         self.criterion = torch.nn.NLLLoss()
-        self.routing_criterion = torch.nn.MSELoss()
+        self.routing_criterion = torch.nn.CrossEntropyLoss()
         self.rho = rho
         
         if oits > 10000:
@@ -82,15 +82,17 @@ class MultiAgentMoE(L.LightningModule):
 
     def calculate_loss(self, x, y, theta_reg, curr_agent, log=False):
         x_encoded = curr_agent.encoder(x)
+        x_encoded_out = curr_agent.fc(x)
         x_out = curr_agent.model(x_encoded)
-        aux_loss = self.criterion(x_out, y)
+        aux_loss = self.criterion(x_out, y) + self.criterion(x_encoded_out, y)
         
         # Here learn prototype vectors
-        routing_logits = (F.normalize(curr_agent.prototypes, dim=-1) @ F.normalize(x_encoded.clone().detach(),dim=-1).T).T
-        routing_loss = self.routing_criterion(routing_logits[:, curr_agent.idx], torch.ones_like(y).float())
+        routing_logits = (curr_agent.prototypes @ x_encoded.T.clone().detach()).T
+        routing_labels = torch.ones_like(y) * curr_agent.idx
+        routing_loss = self.routing_criterion(routing_logits, routing_labels)
 
-        # FIXME Change routing back to the way it previously was
-        data_routing_map = routing_logits > self.hparams.data_routing_thresh
+        soft_logits = F.softmax(routing_logits, dim=-1)
+        data_routing_map = soft_logits > self.hparams.data_routing_thresh
         data_routing_map[:, curr_agent.idx] = False
 
         # Store the data that we are going to route to the other agents
@@ -176,12 +178,17 @@ class MultiAgentMoE(L.LightningModule):
                 if masked_data.shape[0] > 0:
                     routed_data.append(masked_data)
                     routed_labels.append(masked_labels)
-            
-            if len(routed_data) > 0:
-                print()
-                
 
-            # Data routing.
+            if len(routed_data) > 0:
+                routed_labels = torch.cat(routed_labels, dim=0)
+                routed_data = torch.cat(routed_data, dim=0)
+
+                curr_agent.opt.zero_grad()
+                logits = curr_agent.model(routed_data)
+                extra_loss = self.criterion(logits, routed_labels)
+                self.manual_backward(extra_loss)
+                curr_agent.opt.step()
+                loss += extra_loss
 
             all_losses.append(loss.item())
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
