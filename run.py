@@ -76,6 +76,7 @@ if __name__=="__main__":
         accelerator=config['accelerator'],
         callbacks=[checkpoint_callback],
         logger=wandb_logger,
+        num_sanity_val_steps=0
         # limit_train_batches=.1,
     )
     

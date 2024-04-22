@@ -4,7 +4,7 @@ import torch
 
 # Taken from https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html
 class SimpleImageEncoder(nn.Module):
-    def __init__(self, prototype_dim=512):
+    def __init__(self, prototype_dim=512, num_labels=50):
         super(SimpleImageEncoder, self).__init__()
 
         # Reduce the number of filters in each layer to decrease the model size
@@ -15,13 +15,15 @@ class SimpleImageEncoder(nn.Module):
         # Flatten and pass through a linear layer to get the desired output dimension
         self.fc = nn.Linear(32 * 8 * 8, prototype_dim)
 
+        self.encode_classifier = nn.Linear(prototype_dim, num_labels)
+
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         x = x.view(x.size(0), -1)  # Flatten the features into a vector
         x = self.fc(x)
-        return x
+        return x, self.encode_classifier(x)
     
 class MLP(nn.Module):
     def __init__(self, num_classes, prototype_dim):

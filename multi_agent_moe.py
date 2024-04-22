@@ -32,18 +32,20 @@ class MultiAgentMoE(L.LightningModule):
                  dinno_weight = 1.0,
                  data_routing_thresh = 0.25,
                  K=2,
+                 num_steps_gather=10,
                  use_max_diff = True):
         
         super().__init__()
+        self.num_steps_gather = num_steps_gather
         self.num_nodes = len(agent_config)
         self.G, self.G_connectivity = create_graph(num_nodes = self.num_nodes,
                                                    graph_type = graph_type,
                                                    target_connectivity = fiedler_value)
         
-        base_encoder = SimpleImageEncoder(prototype_dim) # ResNetEncoder(BasicBlock, [3, 3, 3], prototype_dim)
+        base_encoder = SimpleImageEncoder(prototype_dim, num_labels=num_labels)
         self.agent_id_to_idx = {agent["id"]: i for i, agent in enumerate(agent_config)}
 
-        base_prototypes = torch.rand(self.num_nodes, prototype_dim) * 2 - 1
+        base_prototypes = torch.zeros(self.num_nodes, num_labels)
 
         # Initialize the networks for each agent
         self.agent_config = agent_config
@@ -52,6 +54,7 @@ class MultiAgentMoE(L.LightningModule):
                                           idx=i,
                                           id=agent["id"],
                                           prototypes=base_prototypes,
+                                          prototype_dim=prototype_dim,
                                           num_labels=num_labels) # Change this if needed to adjust for a different encoder
                                           for i, agent in enumerate(self.agent_config)})
         
@@ -77,30 +80,31 @@ class MultiAgentMoE(L.LightningModule):
         self.agent_routing_counts = {agent["id"]: 0 for agent in self.agent_config}
         
         self.manual_global_step=0
+
+        self.add_to_prototypes=True
         
         self.save_hyperparameters()
 
-    def calculate_loss(self, x, y, theta_reg, curr_agent, log=False):
-        x_encoded = curr_agent.encoder(x)
-        x_encoded_out = curr_agent.fc(x)
+    def calculate_loss(self, x, y, theta_reg, curr_agent, log=False, add_to_prototype=False):
+        x_encoded, x_encoded_out = curr_agent.encoder(x)
         x_out = curr_agent.model(x_encoded)
-        aux_loss = self.criterion(x_out, y) + self.criterion(x_encoded_out, y)
-        
-        # Here learn prototype vectors
-        routing_logits = (curr_agent.prototypes @ x_encoded.T.clone().detach()).T
-        routing_labels = torch.ones_like(y) * curr_agent.idx
-        routing_loss = self.routing_criterion(routing_logits, routing_labels)
 
-        soft_logits = F.softmax(routing_logits, dim=-1)
-        data_routing_map = soft_logits > self.hparams.data_routing_thresh
+        if add_to_prototype:
+            prototype_counts = F.one_hot(y, num_classes=self.hparams.num_labels).sum(0)
+            curr_agent.add_to_prototype(prototype_counts)
+
+        aux_loss = self.criterion(x_out, y) + self.routing_criterion(x_encoded_out, y)
+
+        soft_logits = F.softmax(x_encoded_out, dim=-1)
+        sims = soft_logits @ F.normalize(curr_agent.prototypes, dim=-1).T
+        data_routing_map = sims > self.hparams.data_routing_thresh
         data_routing_map[:, curr_agent.idx] = False
 
         # Store the data that we are going to route to the other agents
         curr_agent.update_data_routing(data_routing_map, x_encoded.clone().detach(), y)
 
         encoder_flattened = torch.nn.utils.parameters_to_vector(curr_agent.encoder.parameters())
-        prototypes_flattened = torch.nn.utils.parameters_to_vector(curr_agent.prototypes)
-        theta = torch.cat([encoder_flattened, prototypes_flattened])
+        theta = encoder_flattened
         reg = torch.sum((theta.reshape(1, -1) - theta_reg)**2)
         dual_loss = torch.dot(curr_agent.dual, theta)
         reg_loss = self.rho * reg
@@ -113,11 +117,25 @@ class MultiAgentMoE(L.LightningModule):
             self.log(f"{curr_agent.id}_train_reg_loss", reg_loss, logger=True)
         
         # Should that dot product be negative?
-        return aux_loss + self.hparams.routing_weight * routing_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
+        return aux_loss + self.hparams.dinno_weight * (dual_loss + reg_loss)
         
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
         # it is independent of forward
+
+        
+        if self.manual_global_step == self.num_steps_gather:
+
+            for i, agent_id in enumerate(self.agents):
+                curr_agent = self.agents[agent_id]
+                if i == 0:
+                    all_prototypes = curr_agent.get_prototypes()
+                else:
+                    all_prototypes += curr_agent.get_prototypes()
+            
+            for agent_id in self.agents:
+                curr_agent = self.agents[agent_id]
+                curr_agent.prototypes = all_prototypes
 
         for agent_id in self.agents:
             curr_agent = self.agents[agent_id]
@@ -161,7 +179,8 @@ class MultiAgentMoE(L.LightningModule):
                                            y_split,
                                            theta_reg,
                                            curr_agent = curr_agent,
-                                           log = False)
+                                           log = False,
+                                           add_to_prototype = self.manual_global_step < self.num_steps_gather)
                 self.manual_backward(loss)
                 curr_agent.opt.step()
 
@@ -179,16 +198,18 @@ class MultiAgentMoE(L.LightningModule):
                     routed_data.append(masked_data)
                     routed_labels.append(masked_labels)
 
-            if len(routed_data) > 0:
-                routed_labels = torch.cat(routed_labels, dim=0)
-                routed_data = torch.cat(routed_data, dim=0)
+            # Comment out this part for now
+            # FIXME Need to make sure data is routing correctly before we train on it
+            # if len(routed_data) > 0:
+            #     routed_labels = torch.cat(routed_labels, dim=0)
+            #     routed_data = torch.cat(routed_data, dim=0)
 
-                curr_agent.opt.zero_grad()
-                logits = curr_agent.model(routed_data)
-                extra_loss = self.criterion(logits, routed_labels)
-                self.manual_backward(extra_loss)
-                curr_agent.opt.step()
-                loss += extra_loss
+            #     curr_agent.opt.zero_grad()
+            #     logits = curr_agent.model(routed_data)
+            #     extra_loss = self.criterion(logits, routed_labels)
+            #     self.manual_backward(extra_loss)
+            #     curr_agent.opt.step()
+            #     loss += extra_loss
 
             all_losses.append(loss.item())
         self.log(f"train_loss", np.mean(all_losses), logger=True, prog_bar=True)
@@ -205,10 +226,11 @@ class MultiAgentMoE(L.LightningModule):
         b = x.shape[0] 
         
         encode_agent = self.agents[self.agent_config[0]["id"]]
-        x_encoded = encode_agent.encoder(x)
+        x_encoded, x_encoded_out = encode_agent.encoder(x)
         
         # Routing mechanism
-        sims = F.softmax(encode_agent.prototypes @ x_encoded.T, dim=0)
+        soft_logits = F.softmax(x_encoded_out, dim=-1)
+        sims = F.normalize(encode_agent.prototypes, dim=-1) @ soft_logits.T
         routing_topk = torch.topk(sims, k=self.hparams.K, dim=0)
 
         # This gets the maximum accuracy we could achieve by perfect routing
